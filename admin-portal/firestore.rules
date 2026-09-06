@@ -1,0 +1,16 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Check if user is signed in with Firebase Authentication
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Allow authenticated users to read and write operational collections
+    // (users, assets, maintenance_tasks, block_plans, candidate_windows, audit_logs, etc.)
+    match /{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}
