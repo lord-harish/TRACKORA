@@ -14,22 +14,67 @@ export function toDate(v) {
   if (!v) return null
   try {
     if (typeof v.toDate === 'function') return v.toDate()
-    if (v.seconds) return new Date(v.seconds * 1000)
-    const d = new Date(v)
-    return isNaN(d) ? null : d
+    if (v.seconds !== undefined && v.seconds !== null) return new Date(Number(v.seconds) * 1000)
+    if (v._seconds !== undefined && v._seconds !== null) return new Date(Number(v._seconds) * 1000)
+    if (typeof v === 'number') return new Date(v)
+    const str = String(v).trim()
+    const secMatch = str.match(/['"]?seconds['"]?\s*:\s*(\d+)/i)
+    if (secMatch) {
+      return new Date(Number(secMatch[1]) * 1000)
+    }
+    if (/^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(str)) {
+      const parts = str.split(':')
+      const now = new Date()
+      now.setHours(Number(parts[0]), Number(parts[1]), Number(parts[2] || 0), 0)
+      return now
+    }
+    const d = new Date(str.includes('T') ? str : str.replace(' ', 'T'))
+    return isNaN(d.getTime()) ? null : d
   } catch {
     return null
   }
 }
 
 export function fmtDate(v) {
+  if (!v) return '—'
+  const str = String(v).trim()
+  if (/^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(str)) {
+    return `${str} hrs`
+  }
   const d = toDate(v)
-  return d ? d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
+  if (d) {
+    return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+  }
+  if (str.startsWith('{') && str.endsWith('}')) return '—'
+  return String(v)
 }
 
 export function fmtDateOnly(v) {
+  if (!v) return '—'
+  const str = String(v).trim()
+  if (/^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(str)) {
+    return 'Scheduled'
+  }
   const d = toDate(v)
-  return d ? d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+  if (d) {
+    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  }
+  if (str.startsWith('{') && str.endsWith('}')) return '—'
+  return String(v)
+}
+
+export function fmtTime(v) {
+  if (!v) return '—'
+  const str = String(v).trim()
+  if (/^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(str)) {
+    return `${str} hrs`
+  }
+  const d = toDate(v)
+  if (d) {
+    return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+  }
+  if (str.startsWith('{') && str.endsWith('}')) return '—'
+  return String(v)
 }
 
 export function fmtDurationMin(min) {

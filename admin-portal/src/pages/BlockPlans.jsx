@@ -2,10 +2,51 @@ import { useEffect, useMemo, useState } from 'react'
 import { useCollection } from '../hooks/useCollection.js'
 import { Badge, Card, EmptyState, Loading, Unavailable } from '../components/ui.jsx'
 import { fmtDate, fmtDurationMin, normStatus, pick } from '../utils/format.js'
-import { fetchCollection, updateDocFields, writeAudit } from '../services/firestoreService.js'
+import { fetchCollection, updateDocFields, writeAudit, createPlanVersion } from '../services/firestoreService.js'
 import { useAuth } from '../context/AuthContext.jsx'
 
 const TABS = ['all', 'planned', 'pending approval', 'approved', 'completed', 'cancelled']
+
+function blockStartTime(b) {
+  return pick(
+    b,
+    'block_start', 'blockStart',
+    'start_time', 'startTime',
+    'start', 'window_start', 'scheduled_start', 'planned_start'
+  )
+}
+
+function blockEndTime(b) {
+  const direct = pick(
+    b,
+    'block_end', 'blockEnd',
+    'end_time', 'endTime',
+    'end', 'window_end', 'scheduled_end', 'planned_end'
+  )
+  if (direct) return direct
+  const s = blockStartTime(b)
+  const dur = Number(pick(b, 'duration_min', 'durationMin', 'duration', 'block_duration'))
+  if (s && dur && /^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(String(s).trim())) {
+    const [hh, mm] = String(s).trim().split(':').map(Number)
+    const totalMin = (hh * 60 + mm + dur) % (24 * 60)
+    const endH = String(Math.floor(totalMin / 60)).padStart(2, '0')
+    const endM = String(totalMin % 60).padStart(2, '0')
+    return `${endH}:${endM}`
+  }
+  return null
+}
+
+function blockWindowText(b) {
+  const s = blockStartTime(b)
+  const e = blockEndTime(b)
+  const sFormatted = s ? fmtDate(s) : ''
+  const eFormatted = e ? fmtDate(e) : ''
+  if (sFormatted && eFormatted && sFormatted !== '—' && eFormatted !== '—') {
+    return `${sFormatted} → ${eFormatted}`
+  }
+  if (sFormatted && sFormatted !== '—') return `Start: ${sFormatted}`
+  return pick(b, 'window', 'scheduled_window') || 'Scheduled Window'
+}
 
 export default function BlockPlans() {
   const { rows, loading, unavailable } = useCollection('block_plans', { max: 500 })
@@ -88,6 +129,21 @@ export default function BlockPlans() {
       if (selected.approvalStatus !== undefined) patch.approvalStatus = next
       if (Object.keys(patch).length === 0) patch.status = next
       await updateDocFields('block_plans', selected.id, patch)
+      await createPlanVersion({
+        plan_id: selected.id,
+        version: String((versions.length + 1) + '.0'),
+        reason: `Admin ${ok ? 'approved' : 'rejected'} block plan`,
+        schedule_snapshot: {
+          section: selected.section,
+          block_start: selected.block_start || selected.start_time || '',
+          block_end: selected.block_end || selected.end_time || '',
+          duration_min: selected.duration_min || null,
+          task_ids: selected.task_ids || selected.tasks || [],
+          status: next,
+        },
+        created_by: user?.email || 'admin',
+        status: next,
+      })
       await writeAudit({
         user_email: user?.email || '',
         action: ok ? 'block_plan_approved' : 'block_plan_rejected',
@@ -98,7 +154,7 @@ export default function BlockPlans() {
         details: `Admin ${ok ? 'approved' : 'rejected'} plan ${selected.id}`,
       })
       setSelected({ ...selected, ...patch })
-      setMsg(ok ? 'Plan approved and logged.' : 'Plan rejected and logged.')
+      setMsg(ok ? 'Plan approved, versioned, and logged.' : 'Plan rejected, versioned, and logged.')
     } catch (e) {
       setMsg(e.message || 'Update failed. Check Firestore rules.')
     } finally {
@@ -135,9 +191,9 @@ export default function BlockPlans() {
                 <tr key={r.id}>
                   <td className="id">{pick(r, 'plan_id', 'planId', 'title') || r.id}</td>
                   <td>{pick(r, 'section', 'location', 'corridor', 'station') || '—'}</td>
-                  <td className="muted">{fmtDate(pick(r, 'start_time', 'startTime', 'start'))} → {fmtDate(pick(r, 'end_time', 'endTime', 'end'))}</td>
-                  <td>{fmtDurationMin(pick(r, 'duration_min', 'durationMin', 'duration'))}</td>
-                  <td className="muted">{Array.isArray(pick(r, 'departments', 'departments_involved')) ? pick(r, 'departments', 'departments_involved').join(', ') : (pick(r, 'departments', 'departments_involved') || '—')}</td>
+                  <td className="muted">{blockWindowText(r)}</td>
+                  <td>{fmtDurationMin(pick(r, 'duration_min', 'durationMin', 'duration', 'block_duration'))}</td>
+                  <td className="muted">{Array.isArray(pick(r, 'departments', 'departments_involved')) ? pick(r, 'departments', 'departments_involved').join(', ') : (pick(r, 'department', 'departments', 'departments_involved', 'dept') || '—')}</td>
                   <td><b>{pick(r, 'optimization_score', 'optimizationScore', 'score') ?? '—'}</b></td>
                   <td>{pick(r, 'conflicts', 'conflict_count', 'conflictCount') ?? '—'}</td>
                   <td><Badge value={pick(r, 'status', 'approval_status', 'approvalStatus')} /></td>
@@ -161,9 +217,9 @@ export default function BlockPlans() {
             <dl className="kv">
               <dt>Status</dt><dd><Badge value={pick(selected, 'status', 'approval_status')} /></dd>
               <dt>Section</dt><dd>{pick(selected, 'section', 'location', 'corridor') || '—'}</dd>
-              <dt>Window</dt><dd>{fmtDate(pick(selected, 'start_time', 'startTime'))} → {fmtDate(pick(selected, 'end_time', 'endTime'))}</dd>
-              <dt>Duration</dt><dd>{fmtDurationMin(pick(selected, 'duration_min', 'durationMin', 'duration'))}</dd>
-              <dt>Departments</dt><dd>{Array.isArray(pick(selected, 'departments', 'departments_involved')) ? pick(selected, 'departments', 'departments_involved').join(', ') : (pick(selected, 'departments', 'departments_involved') || '—')}</dd>
+              <dt>Window</dt><dd>{blockWindowText(selected)}</dd>
+              <dt>Duration</dt><dd>{fmtDurationMin(pick(selected, 'duration_min', 'durationMin', 'duration', 'block_duration'))}</dd>
+              <dt>Departments</dt><dd>{Array.isArray(pick(selected, 'departments', 'departments_involved')) ? pick(selected, 'departments', 'departments_involved').join(', ') : (pick(selected, 'department', 'departments', 'departments_involved', 'dept') || 'Engineering / Track')}</dd>
               <dt>Tasks</dt><dd>{Array.isArray(pick(selected, 'tasks', 'tasks_included', 'task_ids')) ? pick(selected, 'tasks', 'tasks_included', 'task_ids').join(', ') : (pick(selected, 'tasks', 'tasks_included', 'task_ids') || '—')}</dd>
               <dt>Optimization score</dt><dd>{pick(selected, 'optimization_score', 'optimizationScore', 'score') ?? 'Data unavailable in database'}</dd>
               <dt>Conflicts</dt><dd>{pick(selected, 'conflicts', 'conflict_count') ?? '—'}</dd>

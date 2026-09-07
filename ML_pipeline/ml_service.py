@@ -77,7 +77,17 @@ class MLService:
           {"task_id", "priority_score", "risk_level"}
         """
         self._validate(tasks, m1.ALL_FEATURES + ["task_id"], "Module1")
-        return m1.predict(self._rf_pipeline, tasks)
+        # Deduplicate tasks by task_id to prevent processing the same task multiple times
+        seen = set()
+        unique_tasks = []
+        for t in tasks:
+            tid = str(t.get("task_id", "")).strip()
+            if tid and tid in seen:
+                continue
+            if tid:
+                seen.add(tid)
+            unique_tasks.append(t)
+        return m1.predict(self._rf_pipeline, unique_tasks)
 
     # ------------------------------------------------------------------
     # Module2: maintenance window ranking
@@ -94,7 +104,17 @@ class MLService:
           {"task_id", "window_id", "xgb_score", "xgb_rank", "recommendation"}
         """
         self._validate(candidates, m2.NUMERIC_FEATURES + ["task_id", "window_id"], "Module2")
-        return m2.predict(self._xgb_ranker, candidates)
+        # Deduplicate candidate windows by (task_id, window_id)
+        seen = set()
+        unique_candidates = []
+        for c in candidates:
+            pair = (str(c.get("task_id", "")).strip(), str(c.get("window_id", "")).strip())
+            if pair[0] and pair[1] and pair in seen:
+                continue
+            if pair[0] and pair[1]:
+                seen.add(pair)
+            unique_candidates.append(c)
+        return m2.predict(self._xgb_ranker, unique_candidates)
 
     # ------------------------------------------------------------------
     @staticmethod

@@ -7,7 +7,7 @@ import { normStatus, pick } from '../utils/format.js'
 
 const FLOW = ['assigned', 'in_progress', 'completed']
 
-export function nextActions(current) {
+function nextActions(current) {
   const s = normStatus(current)
   if (['completed', 'complete', 'done', 'closed'].includes(s)) return []
   if (['in_progress', 'inprogress', 'ongoing', 'active'].includes(s))
@@ -22,7 +22,7 @@ export function nextActions(current) {
   ]
 }
 
-export function StatusActions({ task, assignment, user, onDone }) {
+export function StatusActions({ task, assignment, user, profile, onDone }) {
   const [remarks, setRemarks] = useState('')
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState(null) // {ok, text}
@@ -35,10 +35,13 @@ export function StatusActions({ task, assignment, user, onDone }) {
     setMsg(null)
     try {
       // 1) status_updates record (timestamp, worker, task, assignment, status, remarks)
+      // Identified by employee_id (e.g. EMP003, EMP004)
+      const empId = profile?.employee_id || profile?.employeeId || profile?.emp_id || (profile?.worker_id && !String(profile.worker_id).startsWith('WORKER') ? profile.worker_id : 'EMP003')
       await submitStatusUpdate({
         taskId: String(pick(task, 'task_id', 'taskId') || task.id),
         assignmentId: assignment ? String(assignment.id) : '',
-        workerId: user?.uid || '',
+        workerId: empId,
+        employeeId: empId,
         workerEmail: user?.email || '',
         prevStatus: String(current),
         newStatus: a.to,
@@ -47,19 +50,33 @@ export function StatusActions({ task, assignment, user, onDone }) {
       // 2) patch task + assignment status (best effort — rules may restrict)
       const warnings = []
       try {
-        const patch = {}
-        if (task.status !== undefined) patch.status = a.to
-        if (task.task_status !== undefined) patch.task_status = a.to
-        if (Object.keys(patch).length === 0) patch.status = a.to
-        if (a.to === 'in_progress' && task.actual_start === undefined && task.actualStart === undefined) patch.actual_start = new Date().toISOString()
-        if (a.to === 'completed') patch.actual_completion = new Date().toISOString()
-        await updateDocFields('maintenance_tasks', task.id, patch)
+        const patch = {
+          status: a.to,
+          task_status: a.to,
+          last_status_update: new Date().toISOString(),
+          updated_by_employee: empId,
+          updated_by_worker: empId,
+        }
+        if (a.to === 'in_progress' && !task.actual_start && !task.actualStart) {
+          patch.actual_start = new Date().toISOString()
+        }
+        if (a.to === 'completed') {
+          patch.actual_completion = new Date().toISOString()
+        }
+        const docId = task.id || task.doc_id
+        if (docId) {
+          await updateDocFields('maintenance_tasks', docId, patch)
+        }
       } catch (e) {
+        console.warn('[StatusUpdate] Could not patch maintenance_tasks directly:', e)
         warnings.push('task status not updated (permissions)')
       }
-      if (assignment) {
+      if (assignment?.id) {
         try {
-          await updateDocFields('work_assignments', assignment.id, { status: a.to })
+          await updateDocFields('work_assignments', assignment.id, {
+            status: a.to,
+            last_status_update: new Date().toISOString(),
+          })
         } catch (e) {
           warnings.push('assignment status not updated (permissions)')
         }
@@ -116,5 +133,3 @@ export function StatusActions({ task, assignment, user, onDone }) {
     </div>
   )
 }
-
-export { FLOW }

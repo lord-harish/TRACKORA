@@ -1,0 +1,159 @@
+// Central Firestore access layer.
+// Never fabricate data: on missing collection / permission error,
+// callers receive { rows: [], unavailable: true } and must render
+// "Data unavailable in database".
+import {
+  addDoc,
+  collection,
+  getDocs,
+  getDoc,
+  limit,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+  doc,
+  where,
+  onSnapshot,
+} from 'firebase/firestore'
+import { db, isFirebaseConfigured } from '../firebase.js'
+
+export const COLLECTIONS = [
+  'users',
+  'assets',
+  'maintenance_tasks',
+  'train_movements',
+  'goods_forecasts',
+  'corridor_blocks',
+  'weather',
+  'candidate_windows',
+  'block_plans',
+  'plan_versions',
+  'work_assignments',
+  'status_updates',
+  'audit_logs',
+]
+
+export function missingDb() {
+  return !isFirebaseConfigured || !db
+}
+
+export async function fetchCollection(name, { orderField = null, orderDir = 'desc', max = 500, filters = [] } = {}) {
+  if (missingDb()) return { rows: [], unavailable: true, reason: 'not-configured' }
+  try {
+    let q = collection(db, name)
+    const clauses = []
+    for (const f of filters) clauses.push(where(f.field, f.op, f.value))
+    if (orderField) clauses.push(orderBy(orderField, orderDir))
+    clauses.push(limit(max))
+    q = clauses.length ? query(q, ...clauses) : q
+    const snap = await getDocs(q)
+    return { rows: snap.docs.map((d) => ({ id: d.id, ...d.data() })), unavailable: false }
+  } catch (e) {
+    console.warn(`[TRACKORA Staff] ${name} unavailable:`, e?.code || e?.message)
+    return { rows: [], unavailable: true, reason: e?.code || 'error' }
+  }
+}
+
+export function subscribeCollection(name, options = {}, onUpdate, onError) {
+  if (missingDb()) {
+    onUpdate({ rows: [], unavailable: true, reason: 'not-configured' })
+    return () => {}
+  }
+  const { orderField = null, orderDir = 'desc', max = 500, filters = [] } = options
+  try {
+    let q = collection(db, name)
+    const clauses = []
+    for (const f of filters) clauses.push(where(f.field, f.op, f.value))
+    if (orderField) clauses.push(orderBy(orderField, orderDir))
+    clauses.push(limit(max))
+    q = clauses.length ? query(q, ...clauses) : q
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        onUpdate({ rows, unavailable: false })
+      },
+      (err) => {
+        console.warn(`[TRACKORA Staff] ${name} live listener issue:`, err?.code || err?.message)
+        if (onError) onError(err)
+        fetchCollection(name, options).then(onUpdate).catch(() => {
+          onUpdate({ rows: [], unavailable: true, reason: err?.code || 'error' })
+        })
+      }
+    )
+    return unsub
+  } catch (err) {
+    console.warn(`[TRACKORA Staff] ${name} subscription setup issue:`, err?.message)
+    fetchCollection(name, options).then(onUpdate).catch(() => {
+      onUpdate({ rows: [], unavailable: true, reason: err?.message || 'error' })
+    })
+    return () => {}
+  }
+}
+
+export async function fetchDocById(collectionName, id) {
+  if (missingDb()) return { data: null, unavailable: true }
+  try {
+    const snap = await getDoc(doc(db, collectionName, id))
+    if (!snap.exists()) return { data: null, unavailable: false, missing: true }
+    return { data: { id: snap.id, ...snap.data() }, unavailable: false }
+  } catch {
+    return { data: null, unavailable: true }
+  }
+}
+
+export async function addRecord(collectionName, data) {
+  if (missingDb()) throw new Error('Database not configured')
+  const ref = await addDoc(collection(db, collectionName), {
+    ...data,
+    created_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  })
+  return ref.id
+}
+
+export async function updateDocFields(collectionName, id, fields) {
+  if (missingDb()) throw new Error('Database not configured')
+  await updateDoc(doc(db, collectionName, id), { ...fields, updated_at: serverTimestamp() })
+}
+
+export async function writeAudit({ user_email = '', action = '', entity_type = '', entity_id = '', prev_status = '', new_status = '', details = '' }) {
+  if (missingDb()) return
+  try {
+    await addDoc(collection(db, 'audit_logs'), {
+      timestamp: serverTimestamp(),
+      created_at: serverTimestamp(),
+      user: user_email,
+      user_email,
+      action,
+      entity_type,
+      entity_id,
+      previous_status: prev_status,
+      new_status,
+      details,
+    })
+  } catch (e) {
+    console.warn('[TRACKORA Staff] audit write failed:', e?.message)
+  }
+}
+
+export async function createPlanVersion({ plan_id, version = '1.0', reason = '', schedule_snapshot = {}, created_by = '', status = '' }) {
+  if (missingDb()) return
+  try {
+    const ref = await addDoc(collection(db, 'plan_versions'), {
+      plan_id: String(plan_id),
+      version: String(version),
+      reason: String(reason),
+      schedule_snapshot,
+      created_by: String(created_by),
+      status: String(status),
+      created_at: serverTimestamp(),
+      timestamp: serverTimestamp(),
+    })
+    return ref.id
+  } catch (e) {
+    console.warn('[TRACKORA Staff] plan_version write failed:', e?.message)
+  }
+}

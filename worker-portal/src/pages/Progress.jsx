@@ -2,27 +2,27 @@ import { useMemo, useState } from 'react'
 import { useCollection } from '../hooks/useCollection.js'
 import { Badge, Card, EmptyState, Loading, Unavailable } from '../components/ui.jsx'
 import { fmtDate, normStatus, pick, toDate } from '../utils/format.js'
-import { assignmentBelongsTo, myTasks, taskBucket } from '../services/workerScope.js'
+import { assignmentBelongsTo, myTasks, taskBucket, taskIdOf } from '../services/workerScope.js'
 import { StatusActions } from '../components/StatusUpdate.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
 export default function Progress() {
-  const { user } = useAuth()
+  const { user, profile } = useAuth()
   const tasksQ = useCollection('maintenance_tasks', { max: 1000 })
   const assignsQ = useCollection('work_assignments', { max: 1000 })
   const updatesQ = useCollection('status_updates', { max: 500 })
   const [openId, setOpenId] = useState(null)
 
   const mine = useMemo(() => {
-    const myAssigns = assignsQ.rows.filter((a) => assignmentBelongsTo(a, user))
-    return { myAssigns, tasks: myTasks(tasksQ.rows, myAssigns, user) }
-  }, [tasksQ.rows, assignsQ.rows, user])
+    const myAssigns = assignsQ.rows.filter((a) => assignmentBelongsTo(a, user, profile))
+    return { myAssigns, tasks: myTasks(tasksQ.rows, myAssigns, user, profile) }
+  }, [tasksQ.rows, assignsQ.rows, user, profile])
 
   const updatesByTask = useMemo(() => {
     const m = {}
     if (updatesQ.unavailable) return m
     updatesQ.rows.forEach((u) => {
-      const t = pick(u, 'task_id', 'taskId')
+      const t = taskIdOf(u)
       if (!t) return
       const k = String(t)
       if (!m[k]) m[k] = []
@@ -47,12 +47,12 @@ export default function Progress() {
   }, [mine.tasks])
 
   const assignmentFor = (t) => {
-    const tid = String(pick(t, 'task_id', 'taskId') || t.id)
-    return mine.myAssigns.find((a) => String(pick(a, 'task_id', 'taskId') || '') === tid) || null
+    const tid = taskIdOf(t)
+    return mine.myAssigns.find((a) => taskIdOf(a) === tid) || null
   }
 
   const timeline = (t) => {
-    const ups = updatesByTask[String(pick(t, 'task_id', 'taskId') || t.id)] || updatesByTask[String(t.id)] || []
+    const ups = updatesByTask[taskIdOf(t)] || []
     const steps = [
       { key: 'assigned', label: 'Assigned', at: pick(t, 'assigned_at', 'created_at') },
       { key: 'in_progress', label: 'Started', at: pick(t, 'actual_start', 'actualStart') || ups.find((u) => normStatus(pick(u, 'new_status', 'status')) === 'in_progress' && pick(u, 'timestamp', 'created_at'))?.timestamp },
@@ -121,7 +121,7 @@ export default function Progress() {
                   {open && (
                     <div>
                       <div className="divider"></div>
-                      <StatusActions task={t} assignment={assignmentFor(t)} user={user} onDone={() => {}} />
+                      <StatusActions task={t} assignment={assignmentFor(t)} user={user} profile={profile} onDone={() => {}} />
                     </div>
                   )}
                 </div>

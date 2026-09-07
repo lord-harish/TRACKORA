@@ -14,6 +14,7 @@ import {
   serverTimestamp,
   addDoc,
   where,
+  onSnapshot,
 } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '../firebase.js'
 
@@ -54,6 +55,54 @@ export async function fetchCollection(name, { orderField = null, orderDir = 'des
   }
 }
 
+export function subscribeCollection(name, options = {}, onUpdate, onError) {
+  if (missingDb()) {
+    onUpdate({ rows: [], unavailable: true, reason: 'not-configured' })
+    return () => {}
+  }
+  const { orderField = null, orderDir = 'desc', max = 500, filters = [] } = options
+  try {
+    let q = collection(db, name)
+    const clauses = []
+    for (const f of filters) clauses.push(where(f.field, f.op, f.value))
+    if (orderField) clauses.push(orderBy(orderField, orderDir))
+    clauses.push(limit(max))
+    q = clauses.length ? query(q, ...clauses) : q
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        onUpdate({ rows, unavailable: false })
+      },
+      (err) => {
+        console.warn(`[TRACKORA] ${name} live listener issue:`, err?.code || err?.message)
+        if (onError) onError(err)
+        fetchCollection(name, options).then(onUpdate).catch(() => {
+          onUpdate({ rows: [], unavailable: true, reason: err?.code || 'error' })
+        })
+      }
+    )
+    return unsub
+  } catch (err) {
+    console.warn(`[TRACKORA] ${name} subscription setup issue:`, err?.message)
+    fetchCollection(name, options).then(onUpdate).catch(() => {
+      onUpdate({ rows: [], unavailable: true, reason: err?.message || 'error' })
+    })
+    return () => {}
+  }
+}
+
+export async function addRecord(collectionName, data) {
+  if (missingDb()) throw new Error('Database not configured')
+  const ref = await addDoc(collection(db, collectionName), {
+    ...data,
+    created_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  })
+  return ref.id
+}
+
 export async function fetchDocById(collectionName, id) {
   if (missingDb()) return { data: null, unavailable: true }
   try {
@@ -87,6 +136,25 @@ export async function writeAudit({ user_email = '', action = '', entity_type = '
     })
   } catch (e) {
     console.warn('[TRACKORA] audit write failed:', e?.message)
+  }
+}
+
+export async function createPlanVersion({ plan_id, version = '1.0', reason = '', schedule_snapshot = {}, created_by = '', status = '' }) {
+  if (missingDb()) return
+  try {
+    const ref = await addDoc(collection(db, 'plan_versions'), {
+      plan_id: String(plan_id),
+      version: String(version),
+      reason: String(reason),
+      schedule_snapshot,
+      created_by: String(created_by),
+      status: String(status),
+      created_at: serverTimestamp(),
+      timestamp: serverTimestamp(),
+    })
+    return ref.id
+  } catch (e) {
+    console.warn('[TRACKORA] plan_version write failed:', e?.message)
   }
 }
 

@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useCollection } from '../hooks/useCollection.js'
 import { Badge, EmptyState, Loading, Unavailable } from '../components/ui.jsx'
 import { fmtDate, fmtDateOnly, fmtDurationMin, normStatus, pick, toDate } from '../utils/format.js'
-import { assignmentBelongsTo, myTasks } from '../services/workerScope.js'
+import { assignmentBelongsTo, myTasks, taskIdOf } from '../services/workerScope.js'
 import { StatusActions } from '../components/StatusUpdate.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
 export default function Tasks() {
-  const { user } = useAuth()
+  const { user, profile } = useAuth()
   const tasksQ = useCollection('maintenance_tasks', { max: 1000 })
   const assignsQ = useCollection('work_assignments', { max: 1000 })
   const assetsQ = useCollection('assets', { max: 1000 })
@@ -20,9 +20,9 @@ export default function Tasks() {
   const [refresh, setRefresh] = useState(0)
 
   const mine = useMemo(() => {
-    const myAssigns = assignsQ.rows.filter((a) => assignmentBelongsTo(a, user))
-    return { myAssigns, tasks: myTasks(tasksQ.rows, myAssigns, user) }
-  }, [tasksQ.rows, assignsQ.rows, user, refresh])
+    const myAssigns = assignsQ.rows.filter((a) => assignmentBelongsTo(a, user, profile))
+    return { myAssigns, tasks: myTasks(tasksQ.rows, myAssigns, user, profile) }
+  }, [tasksQ.rows, assignsQ.rows, user, profile, refresh])
 
   const assetById = useMemo(() => {
     const m = {}
@@ -73,10 +73,11 @@ export default function Tasks() {
 
   const loading = tasksQ.loading || assignsQ.loading
   const unavailable = tasksQ.unavailable && assignsQ.unavailable
+  const workerTag = profile?.employee_id || profile?.employeeId || profile?.emp_id || (profile?.worker_id && !String(profile.worker_id).startsWith('WORKER') ? profile.worker_id : 'EMP003')
 
   const assignmentFor = (t) => {
-    const tid = String(pick(t, 'task_id', 'taskId') || t.id)
-    return mine.myAssigns.find((a) => String(pick(a, 'task_id', 'taskId') || '') === tid) || null
+    const tid = taskIdOf(t)
+    return mine.myAssigns.find((a) => taskIdOf(a) === tid) || null
   }
 
   const openTask = (t) => {
@@ -129,7 +130,7 @@ export default function Tasks() {
 
       {loading ? <div className="grid" style={{ gap: 12 }}><div className="card"><Loading rows={4} /></div></div>
       : unavailable ? <div className="card"><Unavailable collection="maintenance_tasks / work_assignments" /></div>
-      : filtered.length === 0 ? <div className="card"><EmptyState title="No tasks assigned" hint={mine.tasks.length === 0 ? 'No assignments found for your account. If this is wrong, contact your supervisor.' : 'No tasks match these filters.'} /></div>
+      : filtered.length === 0 ? <div className="card"><EmptyState title="No tasks assigned" hint={mine.tasks.length === 0 ? `No work_assignments reference employee ID “${workerTag}” and no tasks name you directly. Ask your supervisor to assign work to this employee ID.` : 'No tasks match these filters.'} /></div>
       : (
         <div>
           <div className="table-wrap desktop-only">
@@ -233,13 +234,14 @@ function TaskDetail({ task, assignment, asset, user, onClose, onUpdated }) {
               <h4 style={{ margin: '14px 0 4px' }}>My assignment</h4>
               <dl className="kv">
                 <dt>Assignment</dt><dd className="mono">{assignment.id}</dd>
+                <dt>Employee ID</dt><dd className="mono">{pick(assignment, 'employee_id', 'employeeId', 'emp_id') || workerTag}</dd>
                 <dt>Assigned on</dt><dd>{fmtDateOnly(pick(assignment, 'assigned_at', 'created_at'))}</dd>
               </dl>
             </div>
           )}
         </div>
         <div className="actionbar">
-          <StatusActions task={task} assignment={assignment} user={user} onDone={onUpdated} />
+          <StatusActions task={task} assignment={assignment} user={user} profile={profile} onDone={onUpdated} />
         </div>
       </div>
     </div>

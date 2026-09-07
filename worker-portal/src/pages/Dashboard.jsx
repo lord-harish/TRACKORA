@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useCollection } from '../hooks/useCollection.js'
 import { Badge, Card, Kpi, Loading, Unavailable } from '../components/ui.jsx'
 import { fmtDate, isToday, pick, toDate } from '../utils/format.js'
-import { assignmentBelongsTo, myBlocks, myTasks, taskBucket } from '../services/workerScope.js'
+import { assignmentBelongsTo, myBlocks, myTasks, taskBucket, taskIdOf } from '../services/workerScope.js'
 import { useAuth } from '../context/AuthContext.jsx'
 
 export default function Dashboard() {
@@ -18,8 +18,8 @@ export default function Dashboard() {
   const scopedUnavailable = tasksQ.unavailable && assignsQ.unavailable
 
   const mine = useMemo(() => {
-    const myAssigns = assignsQ.rows.filter((a) => assignmentBelongsTo(a, user))
-    const tasks = myTasks(tasksQ.rows, myAssigns, user)
+    const myAssigns = assignsQ.rows.filter((a) => assignmentBelongsTo(a, user, profile))
+    const tasks = myTasks(tasksQ.rows, myAssigns, user, profile)
     const buckets = { pending: 0, in_progress: 0, completed: 0, delayed: 0 }
     tasks.forEach((t) => {
       const b = taskBucket(t)
@@ -35,11 +35,11 @@ export default function Dashboard() {
       .filter((t) => !['completed', 'complete', 'done', 'closed'].includes(String(pick(t, 'status', 'task_status') || '').toLowerCase()))
       .sort((a, b) => (toDate(pick(a, 'planned_date', 'due_date')) || new Date(8640000000000000)) - (toDate(pick(b, 'planned_date', 'due_date')) || new Date(8640000000000000)))
     return { myAssigns, tasks, buckets, today, actionables }
-  }, [tasksQ.rows, assignsQ.rows, user])
+  }, [tasksQ.rows, assignsQ.rows, user, profile])
 
   const nextBlock = useMemo(() => {
     if (blocksQ.unavailable) return null
-    const ids = new Set(mine.tasks.map((t) => String(pick(t, 'task_id', 'taskId') || t.id)))
+    const ids = new Set(mine.tasks.map((t) => taskIdOf(t)))
     const rel = myBlocks(blocksQ.rows, ids, profile)
       .filter((b) => !['cancelled', 'canceled', 'completed', 'complete', 'done'].includes(String(pick(b, 'status', 'approval_status') || '').toLowerCase()))
       .sort((a, b) => (toDate(pick(a, 'start_time', 'startTime')) || new Date(8640000000000000)) - (toDate(pick(b, 'start_time', 'startTime')) || new Date(8640000000000000)))
@@ -48,23 +48,25 @@ export default function Dashboard() {
 
   const recentUpdates = useMemo(() => {
     if (updatesQ.unavailable) return []
-    const ids = new Set(mine.tasks.map((t) => String(pick(t, 'task_id', 'taskId') || t.id)))
+    const ids = new Set(mine.tasks.map((t) => taskIdOf(t)))
+    const myEmpId = profile?.employee_id || profile?.employeeId || profile?.emp_id || 'EMP003'
     return updatesQ.rows
       .filter((u) => {
-        const t = pick(u, 'task_id', 'taskId')
+        const t = taskIdOf(u)
         if (t && ids.has(String(t))) return true
-        const w = pick(u, 'worker_id', 'worker', 'user', 'user_email')
+        const w = pick(u, 'employee_id', 'employeeId', 'emp_id', 'worker_id', 'worker', 'user', 'user_email')
+        if (w && String(w).toLowerCase() === String(myEmpId).toLowerCase()) return true
         return w && user && (String(w).toLowerCase() === String(user.uid).toLowerCase() || String(w).toLowerCase() === String(user.email || '').toLowerCase())
       })
       .sort((a, b) => (toDate(pick(b, 'timestamp', 'created_at')) || 0) - (toDate(pick(a, 'timestamp', 'created_at')) || 0))
       .slice(0, 5)
-  }, [updatesQ, mine.tasks, user])
+  }, [updatesQ, mine.tasks, user, profile])
 
   return (
     <div>
       <div className="page-head">
         <div>
-          <h2>Namaste, {profile?.name || user?.email?.split('@')[0] || 'Worker'}</h2>
+          <h2>Namaste, {profile?.name || user?.email?.split('@')[0] || 'Worker'} <span style={{ fontSize: '0.85em', color: 'var(--muted)', fontWeight: 400 }}>({profile?.employee_id || 'EMP003'})</span></h2>
           <p>Here is what needs your attention today.</p>
         </div>
         <button className="btn btn-primary" onClick={() => nav('/tasks')}>View my tasks</button>
@@ -122,7 +124,15 @@ export default function Dashboard() {
                   <Badge value={pick(nextBlock, 'status', 'approval_status')} />
                 </div>
                 <p className="muted" style={{ margin: '6px 0 0' }}>
-                  {fmtDate(pick(nextBlock, 'start_time', 'startTime'))} → {fmtDate(pick(nextBlock, 'end_time', 'endTime'))}
+                  {(() => {
+                    const s = pick(nextBlock, 'block_start', 'blockStart', 'start_time', 'startTime', 'start')
+                    const e = pick(nextBlock, 'block_end', 'blockEnd', 'end_time', 'endTime', 'end')
+                    const sf = s ? fmtDate(s) : ''
+                    const ef = e ? fmtDate(e) : ''
+                    if (sf && ef && sf !== '—' && ef !== '—') return `${sf} → ${ef}`
+                    if (sf && sf !== '—') return `Start: ${sf}`
+                    return 'Scheduled Possession Window'
+                  })()}
                 </p>
               </div>
             )}

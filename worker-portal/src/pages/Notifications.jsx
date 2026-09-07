@@ -3,12 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { useCollection } from '../hooks/useCollection.js'
 import { EmptyState, Loading, Unavailable } from '../components/ui.jsx'
 import { fmtDate, pick, toDate } from '../utils/format.js'
-import { assignmentBelongsTo, myTasks } from '../services/workerScope.js'
+import { assignmentBelongsTo, myBlocks, myTasks, taskIdOf } from '../services/workerScope.js'
 import { useAuth } from '../context/AuthContext.jsx'
 
-// Worker-relevant notifications derived from live collections:
-// new assignments, block updates touching my work, task changes.
-// If a dedicated `notifications` collection exists it is merged in.
+// Worker-relevant notifications ONLY: derived from the worker's own
+// assignments, their linked tasks/blocks, and their own updates.
+// If a dedicated `notifications` collection exists, only entries
+// addressed to this worker (or everyone) are merged in.
 export default function Notifications() {
   const { user, profile } = useAuth()
   const nav = useNavigate()
@@ -18,61 +19,66 @@ export default function Notifications() {
   const updatesQ = useCollection('status_updates', { max: 200 })
   const directQ = useCollection('notifications', { max: 100 })
 
+  const scope = useMemo(() => {
+    const myAssigns = assignsQ.unavailable ? [] : assignsQ.rows.filter((a) => assignmentBelongsTo(a, user, profile))
+    const tasks = tasksQ.unavailable ? [] : myTasks(tasksQ.rows, myAssigns, user, profile)
+    const ids = new Set(tasks.map((t) => taskIdOf(t)))
+    const blocks = blocksQ.unavailable ? [] : myBlocks(blocksQ.rows, ids, profile)
+    return { myAssigns, tasks, ids, blocks }
+  }, [assignsQ, tasksQ, blocksQ, user, profile])
+
   const items = useMemo(() => {
     const out = []
     const push = (kind, title, at, detail, link) => {
       const d = toDate(at)
       if (d) out.push({ id: `${kind}-${title}-${d.getTime()}`, kind, title, at: d, detail, link })
     }
-    if (!assignsQ.unavailable) {
-      assignsQ.rows.filter((a) => assignmentBelongsTo(a, user)).slice(0, 10).forEach((a) => {
-        push('assignment', `New task assigned: ${pick(a, 'task_id', 'taskId') || a.id}`,
-          pick(a, 'assigned_at', 'created_at'), `${pick(a, 'section', 'location') || ''} · ${pick(a, 'status') || ''}`.trim(), '/tasks')
-      })
-    }
-    if (!tasksQ.unavailable && !assignsQ.unavailable) {
-      const mine = myTasks(tasksQ.rows, assignsQ.rows.filter((a) => assignmentBelongsTo(a, user)), user)
-      const ids = new Set(mine.map((t) => String(pick(t, 'task_id', 'taskId') || t.id)))
-      mine.slice(0, 10).forEach((t) => {
-        if (pick(t, 'updated_at', 'updatedAt')) {
-          push('task', `Task update: ${pick(t, 'task_id') || t.id}`, pick(t, 'updated_at', 'updatedAt'),
-            `${pick(t, 'status', 'task_status') || ''}`, '/tasks')
-        }
-        void ids
-      })
-    }
-    if (!blocksQ.unavailable) {
-      blocksQ.rows
-        .filter((b) => ['approved', 'active'].includes(String(pick(b, 'status', 'approval_status') || '').toLowerCase()))
-        .slice(0, 10)
-        .forEach((b) => {
-          push('block', `Block schedule: ${pick(b, 'plan_id') || b.id}`, pick(b, 'updated_at', 'created_at', 'start_time'),
-            `${pick(b, 'section', 'location') || ''} · ${fmtDate(pick(b, 'start_time', 'startTime'))}`, '/blocks')
-        })
-    }
+    scope.myAssigns.slice(0, 10).forEach((a) => {
+      push('assignment', `New task assigned: ${taskIdOf(a) || a.id}`,
+        pick(a, 'assigned_at', 'created_at'), `${pick(a, 'section', 'location') || ''} · ${pick(a, 'status') || ''}`.trim(), '/tasks')
+    })
+    scope.tasks.slice(0, 10).forEach((t) => {
+      if (pick(t, 'updated_at', 'updatedAt')) {
+        push('task', `Task update: ${taskIdOf(t)}`, pick(t, 'updated_at', 'updatedAt'),
+          `${pick(t, 'status', 'task_status') || ''}`, '/tasks')
+      }
+    })
+    scope.blocks.slice(0, 10).forEach((b) => {
+      push('block', `Block schedule: ${pick(b, 'plan_id') || b.id}`,
+        pick(b, 'updated_at', 'created_at', 'start_time'),
+        `${pick(b, 'section', 'location') || ''} · ${fmtDate(pick(b, 'start_time', 'startTime'))}`, '/blocks')
+    })
     if (!updatesQ.unavailable) {
-      updatesQ.rows.slice(0, 10).forEach((u) => {
-        const w = pick(u, 'worker_id', 'worker', 'user')
-        const isMine = w && user && (String(w).toLowerCase() === String(user.uid).toLowerCase())
+      updatesQ.rows.forEach((u) => {
+        const tid = taskIdOf(u)
+        const w = pick(u, 'employee_id', 'employeeId', 'emp_id', 'worker_id', 'worker', 'user', 'user_email', 'userEmail')
+        const empId = scope?.profile?.employee_id || 'EMP003'
+        const isMine = (tid && scope.ids.has(tid)) || (w && (
+          String(w).trim().toLowerCase() === String(empId).toLowerCase() ||
+          (user && (
+            String(w).trim().toLowerCase() === String(user.uid || '').toLowerCase() ||
+            String(w).trim().toLowerCase() === String(user.email || '').toLowerCase()
+          ))
+        ))
         if (!isMine) return
-        push('update', `Your update recorded: ${pick(u, 'task_id', 'taskId') || u.id}`,
+        push('update', `Your update recorded: ${tid || u.id}`,
           pick(u, 'timestamp', 'created_at'), `${pick(u, 'new_status', 'status') || ''}`, '/progress')
       })
     }
     if (!directQ.unavailable) {
+      const me = [String(user?.uid || '').toLowerCase(), String(user?.email || '').toLowerCase()]
       directQ.rows.forEach((n) => {
-        const forMe = ['worker', 'all', user?.email, user?.uid].includes(pick(n, 'audience', 'role', 'to'))
-        if (!forMe && directQ.rows.length > 0 && pick(n, 'audience')) return
+        const aud = String(pick(n, 'audience', 'role', 'to', 'target') || 'all').toLowerCase()
+        if (aud !== 'all' && aud !== 'worker' && aud !== 'workers' && !me.includes(aud)) return
         push('notice', pick(n, 'title', 'message') || n.id, pick(n, 'timestamp', 'created_at'),
           pick(n, 'details', 'body') || '', null)
       })
     }
     return out.sort((a, b) => b.at - a.at).slice(0, 30)
-  }, [assignsQ, tasksQ, blocksQ, updatesQ, directQ, user])
+  }, [scope, updatesQ, directQ, user])
 
   const allUnavailable = assignsQ.unavailable && tasksQ.unavailable && blocksQ.unavailable && updatesQ.unavailable && directQ.unavailable
   const loading = assignsQ.loading || tasksQ.loading || blocksQ.loading
-
   const KIND = { assignment: 'b-blue', block: 'b-amber', task: 'b-gray', update: 'b-green', notice: 'b-blue' }
 
   return (
@@ -82,7 +88,7 @@ export default function Notifications() {
       </div>
       {loading ? <div className="card"><Loading rows={4} /></div>
       : allUnavailable ? <div className="card"><Unavailable collection="work_assignments / block_plans / status_updates" /></div>
-      : items.length === 0 ? <div className="card"><EmptyState title="Nothing new" hint="No task or schedule updates for you right now." /></div>
+      : items.length === 0 ? <div className="card"><EmptyState title="Nothing new" hint="No task or schedule updates linked to your assignments right now." /></div>
       : (
         <div className="grid" style={{ gap: 10 }}>
           {items.map((n) => (
@@ -96,7 +102,7 @@ export default function Notifications() {
               </div>
             </div>
           ))}
-          <p className="muted" style={{ fontSize: 12 }}>Notifications are derived from your assignments, blocks and updates in the database.</p>
+          <p className="muted" style={{ fontSize: 12 }}>Notifications are derived from your assignments, linked blocks and updates in the database.</p>
         </div>
       )}
     </div>

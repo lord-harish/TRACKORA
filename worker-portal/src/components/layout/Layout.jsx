@@ -70,11 +70,17 @@ export function Layout({ children }) {
           <div style={{ position: 'relative' }}>
             <div className="profile" onClick={() => setMenu(!menu)}>
               <div className="avatar">{initials(name, user?.email)}</div>
-              <div className="who"><b>{name}</b><span>Worker</span></div>
+              <div className="who">
+                <b>{name}</b>
+                <span>{profile?.employee_id || profile?.employeeId || 'EMP003'}</span>
+              </div>
             </div>
             {menu && (
               <div className="menu">
-                <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--muted)' }}>{user?.email}</div>
+                <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--muted)' }}>
+                  <div>{user?.email}</div>
+                  <div className="mono" style={{ fontSize: 11, marginTop: 2 }}>ID: {profile?.employee_id || 'EMP003'}</div>
+                </div>
                 <button onClick={() => { setMenu(false); nav('/profile') }}>⦿&nbsp; Profile</button>
                 <button onClick={doLogout}>⎋&nbsp; Logout</button>
               </div>

@@ -1,0 +1,32 @@
+{
+  "solverStatus": "OPTIMAL",
+  "selectedBlocks": ["W001"],
+  "selectedTasks": [
+    {
+      "taskId": "T001",
+      "windowId": "W001",
+      "assetId": "ASSET-TRACK-01",
+      "corridorId": "C01",
+      "startMinute": 1320,
+      "endMinute": 1380
+    }
+  ],
+  "unscheduledTasks": [],
+  "objectiveValue": 2640,
+  "scheduledTaskCount": 1,
+  "unscheduledTaskCount": 0,
+  "activatedBlockCount": 1,
+  "solveTime": 0.0021,
+  "explanations": [
+    {
+      "taskId": "T001",
+      "windowId": "W001",
+      "reasons": [
+        "Maintenance priority score contributed to selection",
+        "Required maintenance duration fits inside the window",
+        "No train movement conflicts with the selected window"
+      ]
+    }
+  ],
+  "diagnostics": []
+}

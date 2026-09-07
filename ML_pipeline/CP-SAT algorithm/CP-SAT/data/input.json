@@ -1,0 +1,60 @@
+{
+  "tasks": [
+    {
+      "taskId": "T001",
+      "assetId": "ASSET-TRACK-01",
+      "department": "Engineering",
+      "corridorId": "C01",
+      "durationMinutes": 60,
+      "priorityScore": 95,
+      "safetyCritical": true,
+      "requiredResourceIds": ["R-TRACK-C01"],
+      "candidateWindowIds": ["W001"]
+    }
+  ],
+  "windows": [
+    {
+      "windowId": "W001",
+      "corridorId": "C01",
+      "startMinute": 1320,
+      "endMinute": 1440,
+      "capacity": 1,
+      "weatherAllowed": true,
+      "windowScore": 90
+    }
+  ],
+  "trains": [],
+  "resources": [
+    {
+      "resourceId": "R-TRACK-C01",
+      "resourceType": "TrackMachine",
+      "availableFrom": 1320,
+      "availableTo": 1440,
+      "corridorId": "C01",
+      "capacity": 1
+    }
+  ],
+  "mlScores": {
+    "maintenanceTasks": [
+      {
+        "taskId": "T001",
+        "maintenancePriorityScore": 95,
+        "riskScore": 80,
+        "assetAvailabilityBenefit": 75,
+        "coordinationScore": 20
+      }
+    ],
+    "candidateWindows": [
+      {
+        "taskId": "T001",
+        "windowId": "W001",
+        "candidateWindowScore": 90
+      }
+    ]
+  },
+  "configuration": {
+    "maxTimeInSeconds": 10.0,
+    "numSearchWorkers": 1,
+    "logSearchProgress": false
+  }
+}

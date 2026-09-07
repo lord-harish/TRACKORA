@@ -1,0 +1,4 @@
+# Secrets — never commit
+*firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
+backend/.venv/

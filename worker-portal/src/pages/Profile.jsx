@@ -50,6 +50,7 @@ export default function Profile() {
           <dt>Name</dt><dd>{profile?.name || profile?.display_name || '—'}</dd>
           <dt>Email</dt><dd>{user?.email || pick(profile, 'email') || '—'}</dd>
           <dt>Role</dt><dd>{pick(profile, 'role') || 'worker'}</dd>
+          <dt>Employee ID</dt><dd className="mono">{pick(profile, 'employee_id', 'employeeId', 'emp_id') || 'EMP003'}</dd>
           <dt>User ID</dt><dd className="mono">{user?.uid || profile?.id || '—'}</dd>
         </dl>
       </Card>

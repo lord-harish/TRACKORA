@@ -14,8 +14,25 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+  onSnapshot,
 } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '../firebase.js'
+
+export const COLLECTIONS = [
+  'users',
+  'assets',
+  'maintenance_tasks',
+  'train_movements',
+  'goods_forecasts',
+  'corridor_blocks',
+  'weather',
+  'candidate_windows',
+  'block_plans',
+  'plan_versions',
+  'work_assignments',
+  'status_updates',
+  'audit_logs',
+]
 
 export function missingDb() {
   return !isFirebaseConfigured || !db
@@ -38,6 +55,65 @@ export async function fetchCollection(name, { orderField = null, orderDir = 'des
   }
 }
 
+export function subscribeCollection(name, options = {}, onUpdate, onError) {
+  if (missingDb()) {
+    onUpdate({ rows: [], unavailable: true, reason: 'not-configured' })
+    return () => {}
+  }
+  const { orderField = null, orderDir = 'desc', max = 500, filters = [] } = options
+  try {
+    let q = collection(db, name)
+    const clauses = []
+    for (const f of filters) clauses.push(where(f.field, f.op, f.value))
+    if (orderField) clauses.push(orderBy(orderField, orderDir))
+    clauses.push(limit(max))
+    q = clauses.length ? query(q, ...clauses) : q
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        onUpdate({ rows, unavailable: false })
+      },
+      (err) => {
+        console.warn(`[TRACKORA Worker] ${name} live listener issue:`, err?.code || err?.message)
+        if (onError) onError(err)
+        fetchCollection(name, options).then(onUpdate).catch(() => {
+          onUpdate({ rows: [], unavailable: true, reason: err?.code || 'error' })
+        })
+      }
+    )
+    return unsub
+  } catch (err) {
+    console.warn(`[TRACKORA Worker] ${name} subscription setup issue:`, err?.message)
+    fetchCollection(name, options).then(onUpdate).catch(() => {
+      onUpdate({ rows: [], unavailable: true, reason: err?.message || 'error' })
+    })
+    return () => {}
+  }
+}
+
+export async function fetchDocById(collectionName, id) {
+  if (missingDb()) return { data: null, unavailable: true }
+  try {
+    const snap = await getDoc(doc(db, collectionName, id))
+    if (!snap.exists()) return { data: null, unavailable: false, missing: true }
+    return { data: { id: snap.id, ...snap.data() }, unavailable: false }
+  } catch {
+    return { data: null, unavailable: true }
+  }
+}
+
+export async function addRecord(collectionName, data) {
+  if (missingDb()) throw new Error('Database not configured')
+  const ref = await addDoc(collection(db, collectionName), {
+    ...data,
+    created_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  })
+  return ref.id
+}
+
 export async function updateDocFields(collectionName, id, fields) {
   if (missingDb()) throw new Error('Database not configured')
   await updateDoc(doc(db, collectionName, id), { ...fields, updated_at: serverTimestamp() })
@@ -45,14 +121,16 @@ export async function updateDocFields(collectionName, id, fields) {
 
 // Worker status update: Assigned -> In Progress -> Completed (+ Delayed).
 // Records timestamp, worker, task, assignment, status and remarks.
-export async function submitStatusUpdate({ taskId, assignmentId, workerId, workerEmail, prevStatus, newStatus, remarks }) {
+export async function submitStatusUpdate({ taskId, assignmentId, workerId, employeeId, workerEmail, prevStatus, newStatus, remarks }) {
   if (missingDb()) throw new Error('Database not configured')
+  const empId = employeeId || workerId || ''
   const ref = await addDoc(collection(db, 'status_updates'), {
     task_id: taskId || '',
     assignment_id: assignmentId || '',
-    worker_id: workerId || '',
-    worker: workerEmail || workerId || '',
-    user: workerEmail || workerId || '',
+    employee_id: empId,
+    worker_id: empId,
+    worker: empId || workerEmail || '',
+    user: workerEmail || empId || '',
     previous_status: prevStatus || '',
     new_status: newStatus,
     status: newStatus,
