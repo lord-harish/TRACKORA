@@ -5,6 +5,7 @@ import { Badge, Card, Kpi, Loading, Unavailable } from '../components/ui.jsx'
 import { fmtDate, isToday, pick, toDate } from '../utils/format.js'
 import { assignmentBelongsTo, myBlocks, myTasks, taskBucket, taskIdOf } from '../services/workerScope.js'
 import { useAuth } from '../context/AuthContext.jsx'
+import RailwayGIS from '../gis/RailwayGIS.jsx'
 
 export default function Dashboard() {
   const nav = useNavigate()
@@ -154,6 +155,8 @@ export default function Dashboard() {
           </Card>
         </div>
       </div>
+
+      <RailwayGIS tasks={mine.tasks} />
     </div>
   )
 }

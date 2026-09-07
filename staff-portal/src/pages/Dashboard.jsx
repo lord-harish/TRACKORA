@@ -5,6 +5,7 @@ import { useCollection } from '../hooks/useCollection.js'
 import { Badge, Card, Kpi, Loading, Unavailable } from '../components/ui.jsx'
 import { fmtDate, normStatus, pick } from '../utils/format.js'
 import { useAuth } from '../context/AuthContext.jsx'
+import RailwayGIS from '../gis/RailwayGIS.jsx'
 
 const C = ['#0e7c5b', '#e5a000', '#b42318', '#175cd3', '#667085', '#7a5af8']
 
@@ -117,6 +118,8 @@ export default function Dashboard() {
           )}
         </Card>
       </div>
+
+      <RailwayGIS tasks={tasks.rows} />
 
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <Card title="Upcoming Blocks" sub="Plans awaiting execution or approval" right={<button className="btn btn-sm" onClick={() => nav('/blocks')}>View all</button>}>
