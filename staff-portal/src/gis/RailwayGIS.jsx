@@ -7,36 +7,53 @@ import {
     Popup,
     useMap,
 } from "react-leaflet";
-import { collection, onSnapshot } from "firebase/firestore";
 import "leaflet/dist/leaflet.css";
-import { db } from "../firebase";
+import HeatmapLayer from "./HeatmapLayer.jsx";
+
+/* ═══════════════════════════════════════════
+   CONSTANTS
+   ═══════════════════════════════════════════ */
 
 const MAP_CENTER = [9.35, 78.0];
 const DEFAULT_ZOOM = 8;
 
-/* =========================
-   PRIORITY MAPPINGS
-   Critical = red (#dc2626)
-   High = orange (#ea580c)
-   Medium = yellow (#eab308)
-   Normal = green (#16a34a)
-========================= */
+/* ═══════════════════════════════════════════
+   PRIORITY HELPERS
+   ═══════════════════════════════════════════ */
 
 function getPriorityColor(score) {
-    const value = Number(score ?? 0);
-    if (value >= 81) return "#dc2626";
-    if (value >= 61) return "#ea580c";
-    if (value >= 31) return "#eab308";
+    const v = Number(score ?? 0);
+    if (v >= 81) return "#dc2626";
+    if (v >= 61) return "#ea580c";
+    if (v >= 31) return "#eab308";
     return "#16a34a";
 }
 
 function getPriorityName(score) {
-    const value = Number(score ?? 0);
-    if (value >= 81) return "Critical";
-    if (value >= 61) return "High";
-    if (value >= 31) return "Medium";
+    const v = Number(score ?? 0);
+    if (v >= 81) return "Critical";
+    if (v >= 61) return "High";
+    if (v >= 31) return "Medium";
     return "Normal";
 }
+
+function getRiskBadgeStyle(risk) {
+    const r = String(risk ?? "").trim().toLowerCase();
+    if (["critical", "very_high"].includes(r))
+        return { bg: "#fef2f2", fg: "#991b1b", border: "#fecaca" };
+    if (["high"].includes(r))
+        return { bg: "#fff7ed", fg: "#9a3412", border: "#fed7aa" };
+    if (["medium", "moderate"].includes(r))
+        return { bg: "#fefce8", fg: "#854d0e", border: "#fef08a" };
+    if (["low", "normal"].includes(r))
+        return { bg: "#f0fdf4", fg: "#166534", border: "#bbf7d0" };
+    return { bg: "#f9fafb", fg: "#374151", border: "#e5e7eb" };
+}
+
+/* ═══════════════════════════════════════════
+   COORDINATE EXTRACTION
+   Handles multiple Firestore document shapes
+   ═══════════════════════════════════════════ */
 
 function getTaskCoordinates(task) {
     if (!task) return null;
@@ -51,7 +68,11 @@ function getTaskCoordinates(task) {
         lat = task.geo.latitude ?? task.geo.lat;
         lng = task.geo.longitude ?? task.geo.lng;
     }
-    if (lat === undefined && Array.isArray(task.coordinates) && task.coordinates.length >= 2) {
+    if (
+        lat === undefined &&
+        Array.isArray(task.coordinates) &&
+        task.coordinates.length >= 2
+    ) {
         const [c0, c1] = task.coordinates;
         if (c0 >= 70 && c1 <= 15) {
             lng = c0;
@@ -78,10 +99,47 @@ function getTaskCoordinates(task) {
     return null;
 }
 
-/* =========================
-   MAP AUTO RESIZER
-   Fixes Leaflet container size issues
-========================= */
+/* ═══════════════════════════════════════════
+   COMPLETION STATUS HELPERS
+   ═══════════════════════════════════════════ */
+
+function isTaskCompleted(task) {
+    if (!task) return false;
+    const status = String(task.status || task.task_status || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, "_");
+    const completionStatus = String(task.completion_status || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, "_");
+    const completed = task.completed;
+
+    if (
+        ["completed", "complete", "done", "closed", "resolved"].includes(status)
+    )
+        return true;
+    if (
+        ["completed", "complete", "done", "verified"].includes(completionStatus)
+    )
+        return true;
+    if (completed === true || completed === "true" || completed === 1)
+        return true;
+
+    return false;
+}
+
+function getCompletionLabel(task) {
+    if (!task) return null;
+    const cs = task.completion_status;
+    if (cs) return String(cs).replace(/_/g, " ");
+    if (isTaskCompleted(task)) return "Completed";
+    return null;
+}
+
+/* ═══════════════════════════════════════════
+   MAP UTILITIES
+   ═══════════════════════════════════════════ */
 
 function MapAutoResizer() {
     const map = useMap();
@@ -89,11 +147,10 @@ function MapAutoResizer() {
         const invalidate = () => {
             try {
                 map.invalidateSize();
-            } catch (err) {
-                // Ignore during unmount
+            } catch (_) {
+                /* ignore during unmount */
             }
         };
-
         invalidate();
         const t1 = setTimeout(invalidate, 150);
         const t2 = setTimeout(invalidate, 400);
@@ -102,12 +159,9 @@ function MapAutoResizer() {
         const container = map.getContainer();
         let ro = null;
         if (container && typeof ResizeObserver !== "undefined") {
-            ro = new ResizeObserver(() => {
-                invalidate();
-            });
+            ro = new ResizeObserver(invalidate);
             ro.observe(container);
         }
-
         window.addEventListener("resize", invalidate);
 
         return () => {
@@ -118,25 +172,15 @@ function MapAutoResizer() {
             window.removeEventListener("resize", invalidate);
         };
     }, [map]);
-
     return null;
 }
 
-/* =========================
-   RESET MAP BUTTON
-========================= */
-
 function ResetMapButton() {
     const map = useMap();
-
-    function resetMap() {
-        map.setView(MAP_CENTER, DEFAULT_ZOOM);
-    }
-
     return (
         <button
             type="button"
-            onClick={resetMap}
+            onClick={() => map.setView(MAP_CENTER, DEFAULT_ZOOM)}
             style={{
                 position: "absolute",
                 top: "12px",
@@ -145,26 +189,43 @@ function ResetMapButton() {
                 background: "var(--surface, #ffffff)",
                 border: "1px solid var(--border, #e5e7eb)",
                 borderRadius: "8px",
-                padding: "6px 12px",
+                padding: "6px 14px",
                 cursor: "pointer",
-                fontWeight: "600",
+                fontWeight: 600,
                 fontSize: "12px",
                 color: "var(--text, #111827)",
-                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
+                boxShadow: "0 1px 4px rgba(0, 0, 0, 0.1)",
+                transition: "all 0.15s ease",
             }}
         >
-            Reset View
+            ↻ Reset View
         </button>
     );
 }
 
-/* =========================
-   STAT
-========================= */
+/* ═══════════════════════════════════════════
+   STAT PILL
+   ═══════════════════════════════════════════ */
 
-function Stat({ label, value, color }) {
+function Stat({ label, value, color, active, onClick }) {
     return (
-        <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+        <button
+            type="button"
+            onClick={onClick}
+            style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "6px 14px",
+                borderRadius: "8px",
+                border: active
+                    ? `1.5px solid ${color}`
+                    : "1.5px solid transparent",
+                background: active ? `${color}10` : "transparent",
+                cursor: onClick ? "pointer" : "default",
+                transition: "all 0.15s ease",
+            }}
+        >
             <span
                 style={{
                     width: "8px",
@@ -172,21 +233,86 @@ function Stat({ label, value, color }) {
                     borderRadius: "50%",
                     background: color,
                     display: "inline-block",
+                    boxShadow: `0 0 6px ${color}40`,
                 }}
             />
-            <span style={{ color: "var(--muted, #6b7280)", fontSize: "12.5px" }}>
+            <span
+                style={{
+                    color: "var(--muted, #6b7280)",
+                    fontSize: "12px",
+                    whiteSpace: "nowrap",
+                }}
+            >
                 {label}
             </span>
-            <strong style={{ color: "var(--text, #111827)", fontSize: "13px" }}>
+            <strong
+                style={{
+                    color: "var(--text, #111827)",
+                    fontSize: "14px",
+                    fontWeight: 700,
+                }}
+            >
                 {value}
             </strong>
+        </button>
+    );
+}
+
+/* ═══════════════════════════════════════════
+   TOGGLE SWITCH
+   ═══════════════════════════════════════════ */
+
+function ToggleGroup({ options, value, onChange }) {
+    return (
+        <div
+            style={{
+                display: "inline-flex",
+                background: "var(--surface-2, #f1f5f9)",
+                borderRadius: "8px",
+                padding: "3px",
+                gap: "2px",
+            }}
+        >
+            {options.map((opt) => (
+                <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => onChange(opt.value)}
+                    style={{
+                        padding: "5px 14px",
+                        borderRadius: "6px",
+                        border: "none",
+                        fontSize: "12px",
+                        fontWeight: value === opt.value ? 600 : 400,
+                        cursor: "pointer",
+                        background:
+                            value === opt.value
+                                ? "var(--surface, #ffffff)"
+                                : "transparent",
+                        color:
+                            value === opt.value
+                                ? "var(--text, #111827)"
+                                : "var(--muted, #9ca3af)",
+                        boxShadow:
+                            value === opt.value
+                                ? "0 1px 3px rgba(0,0,0,0.08)"
+                                : "none",
+                        transition: "all 0.15s ease",
+                    }}
+                >
+                    {opt.icon && (
+                        <span style={{ marginRight: "5px" }}>{opt.icon}</span>
+                    )}
+                    {opt.label}
+                </button>
+            ))}
         </div>
     );
 }
 
-/* =========================
+/* ═══════════════════════════════════════════
    LEGEND
-========================= */
+   ═══════════════════════════════════════════ */
 
 function LegendItem({ color, label, range }) {
     return (
@@ -195,7 +321,7 @@ function LegendItem({ color, label, range }) {
                 display: "flex",
                 alignItems: "center",
                 gap: "8px",
-                marginBottom: "6px",
+                marginBottom: "5px",
             }}
         >
             <span
@@ -207,99 +333,133 @@ function LegendItem({ color, label, range }) {
                     display: "inline-block",
                 }}
             />
-            <span style={{ color: "var(--text, #111827)", fontWeight: 500 }}>
+            <span
+                style={{
+                    color: "var(--text, #111827)",
+                    fontWeight: 500,
+                    fontSize: "11.5px",
+                }}
+            >
                 {label}
             </span>
-            <span style={{ color: "var(--muted, #6b7280)", marginLeft: "auto" }}>
+            <span
+                style={{
+                    color: "var(--muted, #6b7280)",
+                    marginLeft: "auto",
+                    fontSize: "11px",
+                }}
+            >
                 {range}
             </span>
         </div>
     );
 }
 
-/* =========================
+function HeatGradientBar() {
+    return (
+        <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid var(--border-soft, #edf0f4)" }}>
+            <div
+                style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    color: "var(--text, #111827)",
+                    marginBottom: "5px",
+                }}
+            >
+                Heatmap Intensity
+            </div>
+            <div
+                style={{
+                    height: "8px",
+                    borderRadius: "4px",
+                    background:
+                        "linear-gradient(to right, #16a34a, #a3e635, #eab308, #ea580c, #dc2626)",
+                }}
+            />
+            <div
+                style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: "10px",
+                    color: "var(--muted, #6b7280)",
+                    marginTop: "3px",
+                }}
+            >
+                <span>Low</span>
+                <span>High</span>
+            </div>
+        </div>
+    );
+}
+
+/* ═══════════════════════════════════════════
+   SELECT STYLE
+   ═══════════════════════════════════════════ */
+
+const selectStyle = {
+    padding: "6px 12px",
+    border: "1px solid var(--border, #d1d5db)",
+    borderRadius: "7px",
+    background: "var(--surface, #ffffff)",
+    color: "var(--text, #374151)",
+    fontSize: "12.5px",
+    outline: "none",
+    cursor: "pointer",
+    transition: "border-color 0.15s ease",
+};
+
+/* ═══════════════════════════════════════════
    MAIN GIS COMPONENT
-========================= */
+   ═══════════════════════════════════════════ */
 
 export default function RailwayGIS({
     tasks: propTasks,
     title = "Railway Operational GIS Monitoring",
     subtitle = "Staff Monitoring — Maintenance Tasks & Corridor Geometry across South Tamil Nadu",
-    role = "staff",
 }) {
     const [railwayData, setRailwayData] = useState(null);
-    const [firestoreTasks, setFirestoreTasks] = useState([]);
     const [geoJsonError, setGeoJsonError] = useState(false);
 
     const [priorityFilter, setPriorityFilter] = useState("all");
     const [statusFilter, setStatusFilter] = useState("all");
     const [departmentFilter, setDepartmentFilter] = useState("all");
+    const [hideCompleted, setHideCompleted] = useState(false);
 
+    const [viewMode, setViewMode] = useState("heatmap"); // "heatmap" | "markers" | "both"
     const [selectedTask, setSelectedTask] = useState(null);
 
-    /* =========================
+    /* ═══════════════════════════════════════
        1. LOAD RAILWAY GEOJSON
-    ========================= */
+       ═══════════════════════════════════════ */
 
     useEffect(() => {
         fetch("/data/south-tamil-nadu-railways.geojson")
             .then((response) => {
-                if (!response.ok) {
+                if (!response.ok)
                     throw new Error("south-tamil-nadu-railways.geojson not found");
-                }
                 return response.json();
             })
-            .then((data) => {
-                setRailwayData(data);
-            })
+            .then(setRailwayData)
             .catch((error) => {
                 console.warn("Railway GIS GeoJSON load warning:", error);
                 setGeoJsonError(true);
             });
     }, []);
 
-    /* =========================
-       2. LOAD FIRESTORE DATA (If not passed via props)
-    ========================= */
-
-    useEffect(() => {
-        if (Array.isArray(propTasks)) {
-            return;
-        }
-
-        if (!db) {
-            console.warn("Firestore db instance is unavailable.");
-            return;
-        }
-
-        try {
-            const unsubscribe = onSnapshot(
-                collection(db, "maintenance_tasks"),
-                (snapshot) => {
-                    const tasks = snapshot.docs.map((doc) => ({
-                        id: doc.id,
-                        ...doc.data(),
-                    }));
-                    setFirestoreTasks(tasks);
-                },
-                (error) => {
-                    console.error("Firestore Railway GIS error:", error);
-                }
-            );
-
-            return () => unsubscribe();
-        } catch (err) {
-            console.error("Could not subscribe to maintenance_tasks:", err);
-        }
-    }, [propTasks]);
+    /* ═══════════════════════════════════════
+       2. DATA SOURCE
+       Uses propTasks from Dashboard's useCollection('maintenance_tasks').
+       No duplicate internal listener — the Dashboard already provides
+       real-time Firestore data via onSnapshot.
+       ═══════════════════════════════════════ */
 
     const allTasks = useMemo(() => {
-        return Array.isArray(propTasks) ? propTasks : firestoreTasks;
-    }, [propTasks, firestoreTasks]);
+        return Array.isArray(propTasks) ? propTasks : [];
+    }, [propTasks]);
 
-    /* =========================
-       3. EXTRACT DEPARTMENTS & FILTER DATA
-    ========================= */
+    /* ═══════════════════════════════════════
+       3. EXTRACT DEPARTMENTS & STATUSES
+       ═══════════════════════════════════════ */
 
     const availableDepartments = useMemo(() => {
         const set = new Set();
@@ -319,27 +479,41 @@ export default function RailwayGIS({
         return Array.from(set).sort();
     }, [allTasks]);
 
+    /* ═══════════════════════════════════════
+       4. FILTER DATA
+       ═══════════════════════════════════════ */
+
     const filteredTasks = useMemo(() => {
         return allTasks.filter((task) => {
-            const score = Number(task.priority_score ?? task.score ?? 0);
+            // Completed filter
+            if (hideCompleted && isTaskCompleted(task)) return false;
+
+            const score = Number(task.priority_score ?? 0);
             const priority = getPriorityName(score).toLowerCase();
-            const status = String(task.status || task.task_status || "").trim().toLowerCase();
-            const dept = String(task.department || task.dept || "").trim().toLowerCase();
+            const status = String(task.status || task.task_status || "")
+                .trim()
+                .toLowerCase();
+            const dept = String(task.department || task.dept || "")
+                .trim()
+                .toLowerCase();
 
             const priorityOK =
-                priorityFilter === "all" || priority === priorityFilter.toLowerCase();
+                priorityFilter === "all" ||
+                priority === priorityFilter.toLowerCase();
             const statusOK =
-                statusFilter === "all" || status === statusFilter.toLowerCase();
+                statusFilter === "all" ||
+                status === statusFilter.toLowerCase();
             const deptOK =
-                departmentFilter === "all" || dept === departmentFilter.toLowerCase();
+                departmentFilter === "all" ||
+                dept === departmentFilter.toLowerCase();
 
             return priorityOK && statusOK && deptOK;
         });
-    }, [allTasks, priorityFilter, statusFilter, departmentFilter]);
+    }, [allTasks, priorityFilter, statusFilter, departmentFilter, hideCompleted]);
 
-    /* =========================
-       4. SEPARATE VALID COORDS VS MISSING
-    ========================= */
+    /* ═══════════════════════════════════════
+       5. SEPARATE VALID COORDS VS MISSING
+       ═══════════════════════════════════════ */
 
     const { validTasks, missingCoordsCount } = useMemo(() => {
         let missing = 0;
@@ -355,22 +529,39 @@ export default function RailwayGIS({
         return { validTasks: valid, missingCoordsCount: missing };
     }, [filteredTasks]);
 
-    /* =========================
-       5. STATISTICS
-    ========================= */
+    /* ═══════════════════════════════════════
+       6. HEATMAP POINTS — [lat, lng, intensity]
+       ═══════════════════════════════════════ */
+
+    const heatmapPoints = useMemo(() => {
+        return validTasks.map((task) => {
+            const score = Number(task.priority_score ?? 0);
+            // Normalize to 0-1 range for leaflet.heat, with a minimum so even
+            // low-priority tasks register on the heatmap
+            const intensity = Math.max(score, 10);
+            return [task._coords[0], task._coords[1], intensity];
+        });
+    }, [validTasks]);
+
+    /* ═══════════════════════════════════════
+       7. STATISTICS
+       ═══════════════════════════════════════ */
 
     const statistics = useMemo(() => {
-        let critical = 0;
-        let high = 0;
-        let medium = 0;
-        let normal = 0;
+        let critical = 0,
+            high = 0,
+            medium = 0,
+            normal = 0,
+            completedCount = 0;
 
         allTasks.forEach((task) => {
-            const score = Number(task.priority_score ?? task.score ?? 0);
+            const score = Number(task.priority_score ?? 0);
             if (score >= 81) critical++;
             else if (score >= 61) high++;
             else if (score >= 31) medium++;
             else normal++;
+
+            if (isTaskCompleted(task)) completedCount++;
         });
 
         return {
@@ -379,18 +570,17 @@ export default function RailwayGIS({
             high,
             medium,
             normal,
+            completed: completedCount,
+            mapped: validTasks.length,
         };
-    }, [allTasks]);
+    }, [allTasks, validTasks]);
 
-    /* =========================
-       6. RAILWAY TRACK STYLE
-    ========================= */
+    /* ═══════════════════════════════════════
+       8. RAILWAY TRACK STYLE
+       ═══════════════════════════════════════ */
 
     function railwayStyle(feature) {
-        const score = Number(
-            feature?.properties?.maintenance_score ?? 0
-        );
-
+        const score = Number(feature?.properties?.maintenance_score ?? 0);
         return {
             color: score > 0 ? getPriorityColor(score) : "#2563eb",
             weight: 3.5,
@@ -398,9 +588,9 @@ export default function RailwayGIS({
         };
     }
 
-    /* =========================
-       7. RENDER
-    ========================= */
+    /* ═══════════════════════════════════════
+       9. RENDER
+       ═══════════════════════════════════════ */
 
     return (
         <div
@@ -410,7 +600,7 @@ export default function RailwayGIS({
                 background: "var(--surface, #ffffff)",
                 borderRadius: "var(--radius, 14px)",
                 border: "1px solid var(--border, #e4e7ec)",
-                boxShadow: "var(--shadow, 0 1px 3px rgba(16, 24, 40, 0.07))",
+                boxShadow: "var(--shadow, 0 2px 8px rgba(16, 24, 40, 0.07))",
                 overflow: "hidden",
                 position: "relative",
                 isolation: "isolate",
@@ -418,7 +608,7 @@ export default function RailwayGIS({
                 marginTop: "16px",
             }}
         >
-            {/* HEADER */}
+            {/* ── HEADER ── */}
             <div
                 style={{
                     background: "var(--surface, #ffffff)",
@@ -439,8 +629,12 @@ export default function RailwayGIS({
                             fontSize: "16px",
                             fontWeight: 700,
                             letterSpacing: "-0.2px",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
                         }}
                     >
+                        <span style={{ fontSize: "18px" }}>🗺️</span>
                         {title}
                     </h3>
                     <p
@@ -464,17 +658,17 @@ export default function RailwayGIS({
                 >
                     {missingCoordsCount > 0 && (
                         <span
-                            title="These maintenance tasks exist in Firestore but lack numeric latitude/longitude coordinates"
+                            title="These tasks exist in Firestore but lack valid lat/lng coordinates"
                             style={{
                                 fontSize: "11.5px",
                                 color: "#b54708",
                                 background: "#fef0c7",
-                                padding: "3px 8px",
+                                padding: "3px 10px",
                                 borderRadius: "6px",
                                 fontWeight: 500,
                             }}
                         >
-                            {missingCoordsCount} task(s) missing coordinates in database
+                            ⚠ {missingCoordsCount} task(s) missing coordinates
                         </span>
                     )}
 
@@ -493,14 +687,17 @@ export default function RailwayGIS({
                                 height: "8px",
                                 borderRadius: "50%",
                                 background: "#16a34a",
+                                animation: "pulse 2s infinite",
                             }}
                         />
-                        <span>Live Firestore Data ({allTasks.length} tasks)</span>
+                        <span>
+                            Live · {statistics.mapped} mapped / {allTasks.length} total
+                        </span>
                     </div>
                 </div>
             </div>
 
-            {/* FILTERS BAR */}
+            {/* ── CONTROLS BAR ── */}
             <div
                 style={{
                     background: "var(--surface-2, #f8fafc)",
@@ -512,6 +709,26 @@ export default function RailwayGIS({
                     borderBottom: "1px solid var(--border-soft, #edf0f4)",
                 }}
             >
+                {/* View mode toggle */}
+                <ToggleGroup
+                    options={[
+                        { value: "heatmap", label: "Heatmap", icon: "🔥" },
+                        { value: "markers", label: "Markers", icon: "📍" },
+                        { value: "both", label: "Both", icon: "🔥📍" },
+                    ]}
+                    value={viewMode}
+                    onChange={setViewMode}
+                />
+
+                <div
+                    style={{
+                        width: "1px",
+                        height: "24px",
+                        background: "var(--border, #d1d5db)",
+                    }}
+                />
+
+                {/* Filters */}
                 <select
                     value={priorityFilter}
                     onChange={(e) => setPriorityFilter(e.target.value)}
@@ -564,182 +781,407 @@ export default function RailwayGIS({
                         </>
                     )}
                 </select>
+
+                {/* Hide completed toggle */}
+                <label
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        fontSize: "12px",
+                        color: "var(--text, #374151)",
+                        cursor: "pointer",
+                        marginLeft: "auto",
+                        userSelect: "none",
+                    }}
+                >
+                    <input
+                        type="checkbox"
+                        checked={hideCompleted}
+                        onChange={(e) => setHideCompleted(e.target.checked)}
+                        style={{ accentColor: "#16a34a", cursor: "pointer" }}
+                    />
+                    Hide completed
+                    {statistics.completed > 0 && (
+                        <span
+                            style={{
+                                fontSize: "11px",
+                                color: "var(--muted, #9ca3af)",
+                            }}
+                        >
+                            ({statistics.completed})
+                        </span>
+                    )}
+                </label>
             </div>
 
-            {/* STATISTICS ROW */}
+            {/* ── STATISTICS ROW ── */}
             <div
                 style={{
                     background: "var(--surface, #ffffff)",
-                    padding: "10px 20px",
+                    padding: "8px 16px",
                     display: "flex",
-                    gap: "20px",
+                    gap: "6px",
                     flexWrap: "wrap",
                     borderBottom: "1px solid var(--border-soft, #edf0f4)",
+                    alignItems: "center",
                 }}
             >
-                <Stat label="Total Operational Tasks" value={statistics.total} color="#374151" />
-                <Stat label="Critical" value={statistics.critical} color="#dc2626" />
-                <Stat label="High" value={statistics.high} color="#ea580c" />
-                <Stat label="Medium" value={statistics.medium} color="#eab308" />
-                <Stat label="Normal" value={statistics.normal} color="#16a34a" />
+                <Stat
+                    label="Total"
+                    value={statistics.total}
+                    color="#374151"
+                    active={priorityFilter === "all"}
+                    onClick={() => setPriorityFilter("all")}
+                />
+                <Stat
+                    label="Critical"
+                    value={statistics.critical}
+                    color="#dc2626"
+                    active={priorityFilter === "critical"}
+                    onClick={() =>
+                        setPriorityFilter(
+                            priorityFilter === "critical" ? "all" : "critical"
+                        )
+                    }
+                />
+                <Stat
+                    label="High"
+                    value={statistics.high}
+                    color="#ea580c"
+                    active={priorityFilter === "high"}
+                    onClick={() =>
+                        setPriorityFilter(
+                            priorityFilter === "high" ? "all" : "high"
+                        )
+                    }
+                />
+                <Stat
+                    label="Medium"
+                    value={statistics.medium}
+                    color="#eab308"
+                    active={priorityFilter === "medium"}
+                    onClick={() =>
+                        setPriorityFilter(
+                            priorityFilter === "medium" ? "all" : "medium"
+                        )
+                    }
+                />
+                <Stat
+                    label="Normal"
+                    value={statistics.normal}
+                    color="#16a34a"
+                    active={priorityFilter === "normal"}
+                    onClick={() =>
+                        setPriorityFilter(
+                            priorityFilter === "normal" ? "all" : "normal"
+                        )
+                    }
+                />
+
+                <div
+                    style={{
+                        marginLeft: "auto",
+                        fontSize: "12px",
+                        color: "var(--muted, #9ca3af)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                    }}
+                >
+                    <span
+                        style={{
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "2px",
+                            background: "#16a34a",
+                            display: "inline-block",
+                        }}
+                    />
+                    {statistics.completed} completed
+                </div>
             </div>
 
-            {/* MAP VIEWPORT */}
-            <div
-                style={{
-                    position: "relative",
-                    height: "520px",
-                    width: "100%",
-                }}
-            >
+            {/* ── MAP VIEWPORT ── */}
+            <div style={{ position: "relative", height: "560px", width: "100%" }}>
+                {/* GeoJSON error overlay */}
+                {geoJsonError && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            top: "50px",
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            zIndex: 1050,
+                            background: "#fef2f2",
+                            border: "1px solid #fecaca",
+                            borderRadius: "8px",
+                            padding: "8px 16px",
+                            fontSize: "12.5px",
+                            color: "#991b1b",
+                            fontWeight: 500,
+                            boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+                        }}
+                    >
+                        ⚠ Railway track data unavailable — could not load
+                        south-tamil-nadu-railways.geojson
+                    </div>
+                )}
+
                 <MapContainer
                     center={MAP_CENTER}
                     zoom={DEFAULT_ZOOM}
                     scrollWheelZoom={true}
-                    style={{
-                        width: "100%",
-                        height: "100%",
-                    }}
+                    style={{ width: "100%", height: "100%" }}
                 >
                     <MapAutoResizer />
 
-                    {/* BASE OPENSTREETMAP */}
+                    {/* BASE TILES */}
                     <TileLayer
                         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                     />
 
-                    {/* OPENRAILWAYMAP TILES */}
+                    {/* OPENRAILWAYMAP OVERLAY */}
                     <TileLayer
                         attribution='<a href="https://www.openrailwaymap.org">OpenRailwayMap</a>'
                         url="https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png"
                         opacity={0.8}
                     />
 
-                    {/* SOUTH TAMIL NADU RAILWAY GEOJSON TRACK GEOMETRY */}
+                    {/* SOUTH TAMIL NADU RAILWAY GEOJSON TRACK */}
                     {railwayData && (
                         <GeoJSON
+                            key={railwayData.features?.length ?? "rg"}
                             data={railwayData}
                             style={railwayStyle}
                             onEachFeature={(feature, layer) => {
                                 layer.on({
                                     click: () => {
                                         const p = feature.properties || {};
-                                        const section = p.section || p.name || p["@id"] || "Tamil Nadu Rail Line";
-                                        const score = Number(p.maintenance_score ?? 0);
+                                        const section =
+                                            p.section ||
+                                            p.name ||
+                                            p["@id"] ||
+                                            "Tamil Nadu Rail Line";
+                                        const score = Number(
+                                            p.maintenance_score ?? 0
+                                        );
                                         const priority = getPriorityName(score);
-                                        const gauge = p.gauge ? `${p.gauge} mm` : "Standard/Broad";
-                                        const electrified = p.electrified || "Standard";
+                                        const gauge = p.gauge
+                                            ? `${p.gauge} mm`
+                                            : "Standard/Broad";
+                                        const electrified =
+                                            p.electrified || "Standard";
 
-                                        const popupHtml =
-                                            "<div style='font-family: Inter, sans-serif; font-size: 12px; line-height: 1.5; min-width: 170px;'>" +
-                                            "<strong style='font-size: 13px; color: #111827; display: block; margin-bottom: 6px;'>Railway Track Geometry</strong>" +
-                                            "<div><b>Section:</b> " + section + "</div>" +
-                                            "<div><b>Gauge:</b> " + gauge + "</div>" +
-                                            "<div><b>Electrification:</b> " + electrified + "</div>" +
-                                            (score > 0 ? "<div><b>Maintenance Score:</b> " + score + " (" + priority + ")</div>" : "") +
+                                        const html =
+                                            "<div style='font-family:Inter,sans-serif;font-size:12px;line-height:1.5;min-width:180px'>" +
+                                            "<strong style='font-size:13px;color:#111827;display:block;margin-bottom:6px'>🛤️ Railway Track Geometry</strong>" +
+                                            "<div><b>Section:</b> " +
+                                            section +
+                                            "</div>" +
+                                            "<div><b>Gauge:</b> " +
+                                            gauge +
+                                            "</div>" +
+                                            "<div><b>Electrification:</b> " +
+                                            electrified +
+                                            "</div>" +
+                                            (score > 0
+                                                ? "<div><b>Maintenance Score:</b> " +
+                                                  score +
+                                                  " (" +
+                                                  priority +
+                                                  ")</div>"
+                                                : "") +
                                             "</div>";
 
-                                        layer.bindPopup(popupHtml).openPopup();
+                                        layer.bindPopup(html).openPopup();
                                     },
                                 });
                             }}
                         />
                     )}
 
-                    {/* REAL MAINTENANCE LOCATIONS FROM FIRESTORE */}
-                    {validTasks.map((task) => {
-                        const score = Number(task.priority_score ?? task.score ?? 0);
-                        const priority = getPriorityName(score);
-                        const color = getPriorityColor(score);
-                        const coords = task._coords;
+                    {/* ── HEATMAP LAYER ── */}
+                    {(viewMode === "heatmap" || viewMode === "both") &&
+                        heatmapPoints.length > 0 && (
+                            <HeatmapLayer points={heatmapPoints} />
+                        )}
 
-                        return (
-                            <CircleMarker
-                                key={task.id}
-                                center={coords}
-                                radius={score >= 81 ? 12 : score >= 61 ? 10 : 8}
-                                pathOptions={{
-                                    color: color,
-                                    fillColor: color,
-                                    fillOpacity: 0.8,
-                                    weight: 2.5,
-                                }}
-                                eventHandlers={{
-                                    click: () => {
-                                        setSelectedTask(task);
-                                    },
-                                }}
-                            >
-                                <Popup>
-                                    <div
-                                        style={{
-                                            minWidth: "210px",
-                                            fontFamily: "var(--font, 'Inter', sans-serif)",
-                                            fontSize: "12.5px",
-                                            lineHeight: "1.5",
-                                        }}
-                                    >
-                                        <h4
+                    {/* ── CIRCLE MARKERS ── */}
+                    {(viewMode === "markers" || viewMode === "both") &&
+                        validTasks.map((task) => {
+                            const score = Number(task.priority_score ?? 0);
+                            const priority = getPriorityName(score);
+                            const color = getPriorityColor(score);
+                            const coords = task._coords;
+                            const completed = isTaskCompleted(task);
+                            const riskLevel =
+                                task.risk_level || task.riskLevel || null;
+                            const riskStyle = getRiskBadgeStyle(riskLevel);
+                            const completionLabel = getCompletionLabel(task);
+
+                            return (
+                                <CircleMarker
+                                    key={task.id}
+                                    center={coords}
+                                    radius={
+                                        score >= 81
+                                            ? 12
+                                            : score >= 61
+                                              ? 10
+                                              : 8
+                                    }
+                                    pathOptions={{
+                                        color: completed ? "#9ca3af" : color,
+                                        fillColor: completed
+                                            ? "#d1d5db"
+                                            : color,
+                                        fillOpacity: completed ? 0.35 : 0.8,
+                                        weight: completed ? 1.5 : 2.5,
+                                        dashArray: completed ? "4 4" : null,
+                                    }}
+                                    eventHandlers={{
+                                        click: () => setSelectedTask(task),
+                                    }}
+                                >
+                                    <Popup>
+                                        <div
                                             style={{
-                                                margin: "0 0 8px",
-                                                fontSize: "14px",
-                                                color: "var(--text, #111827)",
-                                                borderBottom: "1px solid #e5e7eb",
-                                                paddingBottom: "4px",
+                                                minWidth: "230px",
+                                                fontFamily:
+                                                    "var(--font, 'Inter', sans-serif)",
+                                                fontSize: "12.5px",
+                                                lineHeight: "1.55",
                                             }}
                                         >
-                                            Operational Maintenance
-                                        </h4>
+                                            <h4
+                                                style={{
+                                                    margin: "0 0 8px",
+                                                    fontSize: "14px",
+                                                    color: "var(--text, #111827)",
+                                                    borderBottom:
+                                                        "1px solid #e5e7eb",
+                                                    paddingBottom: "6px",
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    justifyContent:
+                                                        "space-between",
+                                                }}
+                                            >
+                                                <span>
+                                                    {completed ? "✅" : "🔧"}{" "}
+                                                    Maintenance
+                                                </span>
+                                                {completionLabel && (
+                                                    <span
+                                                        style={{
+                                                            fontSize: "10.5px",
+                                                            background:
+                                                                "#f0fdf4",
+                                                            color: "#166534",
+                                                            padding:
+                                                                "2px 8px",
+                                                            borderRadius:
+                                                                "4px",
+                                                            fontWeight: 500,
+                                                        }}
+                                                    >
+                                                        {completionLabel}
+                                                    </span>
+                                                )}
+                                            </h4>
 
-                                        <p style={{ margin: "3px 0" }}>
-                                            <strong>Task ID:</strong> {task.task_id || task.id}
-                                        </p>
-                                        <p style={{ margin: "3px 0" }}>
-                                            <strong>Asset:</strong> {task.asset_id || "Field missing in Firestore"}
-                                        </p>
-                                        <p style={{ margin: "3px 0" }}>
-                                            <strong>Section:</strong> {task.section || "Field missing in Firestore"}
-                                        </p>
-                                        <p style={{ margin: "3px 0" }}>
-                                            <strong>Chainage (KM):</strong>{" "}
-                                            {task.km_from ?? "—"} to {task.km_to ?? "—"}
-                                        </p>
-                                        <p style={{ margin: "3px 0" }}>
-                                            <strong>Priority:</strong>{" "}
-                                            <span style={{ color: color, fontWeight: 700 }}>
-                                                {priority} ({score})
-                                            </span>
-                                        </p>
-                                        <p style={{ margin: "3px 0" }}>
-                                            <strong>Status:</strong> {task.status || "Field missing in Firestore"}
-                                        </p>
-                                        <p style={{ margin: "3px 0" }}>
-                                            <strong>Department:</strong> {task.department || "Field missing in Firestore"}
-                                        </p>
-                                    </div>
-                                </Popup>
-                            </CircleMarker>
-                        );
-                    })}
+                                            <p style={{ margin: "3px 0" }}>
+                                                <strong>Task ID:</strong>{" "}
+                                                {task.task_id || task.id}
+                                            </p>
+                                            <p style={{ margin: "3px 0" }}>
+                                                <strong>Asset:</strong>{" "}
+                                                {task.asset_id ||
+                                                    "—"}
+                                            </p>
+                                            <p style={{ margin: "3px 0" }}>
+                                                <strong>Section:</strong>{" "}
+                                                {task.section ||
+                                                    "—"}
+                                            </p>
+                                            <p style={{ margin: "3px 0" }}>
+                                                <strong>Chainage (KM):</strong>{" "}
+                                                {task.km_from ?? "—"} to{" "}
+                                                {task.km_to ?? "—"}
+                                            </p>
+                                            <p style={{ margin: "3px 0" }}>
+                                                <strong>Priority:</strong>{" "}
+                                                <span
+                                                    style={{
+                                                        color: color,
+                                                        fontWeight: 700,
+                                                    }}
+                                                >
+                                                    {priority} ({score})
+                                                </span>
+                                            </p>
+                                            {riskLevel && (
+                                                <p style={{ margin: "3px 0" }}>
+                                                    <strong>
+                                                        Risk Level:
+                                                    </strong>{" "}
+                                                    <span
+                                                        style={{
+                                                            background:
+                                                                riskStyle.bg,
+                                                            color: riskStyle.fg,
+                                                            border: `1px solid ${riskStyle.border}`,
+                                                            padding:
+                                                                "1px 8px",
+                                                            borderRadius:
+                                                                "4px",
+                                                            fontSize:
+                                                                "11.5px",
+                                                            fontWeight: 600,
+                                                        }}
+                                                    >
+                                                        {String(riskLevel).replace(/_/g, " ")}
+                                                    </span>
+                                                </p>
+                                            )}
+                                            <p style={{ margin: "3px 0" }}>
+                                                <strong>Status:</strong>{" "}
+                                                {task.status ||
+                                                    task.task_status ||
+                                                    "—"}
+                                            </p>
+                                            <p style={{ margin: "3px 0" }}>
+                                                <strong>Department:</strong>{" "}
+                                                {task.department ||
+                                                    task.dept ||
+                                                    "—"}
+                                            </p>
+                                        </div>
+                                    </Popup>
+                                </CircleMarker>
+                            );
+                        })}
 
                     <ResetMapButton />
                 </MapContainer>
 
-                {/* INTERACTIVE LEGEND */}
+                {/* ── INTERACTIVE LEGEND ── */}
                 <div
                     style={{
                         position: "absolute",
                         bottom: "16px",
                         right: "16px",
                         zIndex: 1000,
-                        background: "var(--surface, #ffffff)",
+                        background: "var(--surface, #ffffffee)",
+                        backdropFilter: "blur(8px)",
                         padding: "12px 14px",
                         borderRadius: "10px",
                         border: "1px solid var(--border, #e5e7eb)",
-                        boxShadow: "0 3px 12px rgba(0, 0, 0, 0.12)",
+                        boxShadow: "0 4px 16px rgba(0, 0, 0, 0.12)",
                         fontSize: "12px",
-                        minWidth: "165px",
+                        minWidth: "170px",
                     }}
                 >
                     <strong
@@ -750,127 +1192,262 @@ export default function RailwayGIS({
                             color: "var(--text, #111827)",
                         }}
                     >
-                        Maintenance Priority
+                        Priority Scale
                     </strong>
+                    <LegendItem
+                        color="#dc2626"
+                        label="Critical"
+                        range="81–100"
+                    />
+                    <LegendItem
+                        color="#ea580c"
+                        label="High"
+                        range="61–80"
+                    />
+                    <LegendItem
+                        color="#eab308"
+                        label="Medium"
+                        range="31–60"
+                    />
+                    <LegendItem
+                        color="#16a34a"
+                        label="Normal"
+                        range="0–30"
+                    />
 
-                    <LegendItem color="#dc2626" label="Critical" range="81–100" />
-                    <LegendItem color="#ea580c" label="High" range="61–80" />
-                    <LegendItem color="#eab308" label="Medium" range="31–60" />
-                    <LegendItem color="#16a34a" label="Normal" range="0–30" />
+                    {(viewMode === "heatmap" || viewMode === "both") && (
+                        <HeatGradientBar />
+                    )}
+
+                    {(viewMode === "markers" || viewMode === "both") && (
+                        <div
+                            style={{
+                                marginTop: "8px",
+                                paddingTop: "8px",
+                                borderTop:
+                                    "1px solid var(--border-soft, #edf0f4)",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "8px",
+                            }}
+                        >
+                            <span
+                                style={{
+                                    width: "14px",
+                                    height: "14px",
+                                    borderRadius: "50%",
+                                    border: "2px dashed #9ca3af",
+                                    display: "inline-block",
+                                }}
+                            />
+                            <span
+                                style={{
+                                    fontSize: "11px",
+                                    color: "var(--muted, #6b7280)",
+                                }}
+                            >
+                                Completed task
+                            </span>
+                        </div>
+                    )}
                 </div>
 
-                {/* SELECTED TASK DETAILS DRAWER */}
+                {/* ── SELECTED TASK DETAIL DRAWER ── */}
                 {selectedTask && (
-                    <div
-                        style={{
-                            position: "absolute",
-                            top: "14px",
-                            right: "14px",
-                            zIndex: 1100,
-                            width: "300px",
-                            maxWidth: "calc(100% - 28px)",
-                            maxHeight: "calc(100% - 28px)",
-                            overflowY: "auto",
-                            background: "var(--surface, #ffffff)",
-                            borderRadius: "12px",
-                            padding: "16px",
-                            border: "1px solid var(--border, #e5e7eb)",
-                            boxShadow: "0 8px 24px rgba(16, 24, 40, 0.15)",
-                            fontSize: "12.5px",
-                            lineHeight: "1.5",
-                        }}
-                    >
-                        <button
-                            type="button"
-                            onClick={() => setSelectedTask(null)}
-                            style={{
-                                float: "right",
-                                border: "none",
-                                background: "transparent",
-                                fontSize: "18px",
-                                cursor: "pointer",
-                                color: "var(--muted, #6b7280)",
-                                padding: "0 4px",
-                                lineHeight: "1",
-                            }}
-                        >
-                            ✕
-                        </button>
-
-                        <h4
-                            style={{
-                                margin: "0 0 10px",
-                                fontSize: "14px",
-                                fontWeight: 700,
-                                color: "var(--text, #111827)",
-                            }}
-                        >
-                            Maintenance Task Details
-                        </h4>
-
-                        <div style={{ display: "grid", gap: "6px" }}>
-                            <div>
-                                <b style={{ color: "var(--muted, #6b7280)" }}>Task ID:</b>{" "}
-                                <span>{selectedTask.task_id || selectedTask.id}</span>
-                            </div>
-                            <div>
-                                <b style={{ color: "var(--muted, #6b7280)" }}>Asset:</b>{" "}
-                                <span>{selectedTask.asset_id || "Field missing in Firestore"}</span>
-                            </div>
-                            <div>
-                                <b style={{ color: "var(--muted, #6b7280)" }}>Section:</b>{" "}
-                                <span>{selectedTask.section || "Field missing in Firestore"}</span>
-                            </div>
-                            <div>
-                                <b style={{ color: "var(--muted, #6b7280)" }}>Chainage:</b>{" "}
-                                <span>
-                                    {selectedTask.km_from ?? "—"} to {selectedTask.km_to ?? "—"} KM
-                                </span>
-                            </div>
-                            <div>
-                                <b style={{ color: "var(--muted, #6b7280)" }}>Priority:</b>{" "}
-                                <span
-                                    style={{
-                                        color: getPriorityColor(
-                                            selectedTask.priority_score ?? selectedTask.score
-                                        ),
-                                        fontWeight: 700,
-                                    }}
-                                >
-                                    {getPriorityName(
-                                        selectedTask.priority_score ?? selectedTask.score
-                                    )}{" "}
-                                    ({selectedTask.priority_score ?? selectedTask.score ?? 0})
-                                </span>
-                            </div>
-                            <div>
-                                <b style={{ color: "var(--muted, #6b7280)" }}>Status:</b>{" "}
-                                <span>{selectedTask.status || "Field missing in Firestore"}</span>
-                            </div>
-                            <div>
-                                <b style={{ color: "var(--muted, #6b7280)" }}>Department:</b>{" "}
-                                <span>{selectedTask.department || "Field missing in Firestore"}</span>
-                            </div>
-                            {selectedTask.description && (
-                                <div>
-                                    <b style={{ color: "var(--muted, #6b7280)" }}>Description:</b>{" "}
-                                    <span>{selectedTask.description}</span>
-                                </div>
-                            )}
-                        </div>
-                    </div>
+                    <SelectedTaskDrawer
+                        task={selectedTask}
+                        onClose={() => setSelectedTask(null)}
+                    />
                 )}
             </div>
+
+            {/* Pulse animation for the live indicator */}
+            <style>{`
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.4; }
+                }
+            `}</style>
         </div>
     );
 }
 
-const selectStyle = {
-    padding: "6px 12px",
-    border: "1px solid var(--border, #d1d5db)",
-    borderRadius: "7px",
-    background: "var(--surface, #ffffff)",
-    color: "var(--text, #374151)",
-    fontSize: "12.5px",
-    outline: "none",
-};
+/* ═══════════════════════════════════════════
+   SELECTED TASK DETAIL DRAWER
+   ═══════════════════════════════════════════ */
+
+function SelectedTaskDrawer({ task, onClose }) {
+    const score = Number(task.priority_score ?? 0);
+    const priority = getPriorityName(score);
+    const color = getPriorityColor(score);
+    const riskLevel = task.risk_level || task.riskLevel || null;
+    const riskStyle = getRiskBadgeStyle(riskLevel);
+    const completed = isTaskCompleted(task);
+    const completionLabel = getCompletionLabel(task);
+
+    const rows = [
+        { label: "Task ID", value: task.task_id || task.id },
+        { label: "Asset", value: task.asset_id || "—" },
+        { label: "Section", value: task.section || "—" },
+        {
+            label: "Chainage",
+            value: `${task.km_from ?? "—"} → ${task.km_to ?? "—"} KM`,
+        },
+        {
+            label: "Priority",
+            value: (
+                <span style={{ color, fontWeight: 700 }}>
+                    {priority} ({score})
+                </span>
+            ),
+        },
+        riskLevel
+            ? {
+                  label: "Risk Level",
+                  value: (
+                      <span
+                          style={{
+                              background: riskStyle.bg,
+                              color: riskStyle.fg,
+                              border: `1px solid ${riskStyle.border}`,
+                              padding: "2px 10px",
+                              borderRadius: "5px",
+                              fontSize: "11.5px",
+                              fontWeight: 600,
+                          }}
+                      >
+                          {String(riskLevel).replace(/_/g, " ")}
+                      </span>
+                  ),
+              }
+            : null,
+        {
+            label: "Status",
+            value: task.status || task.task_status || "—",
+        },
+        completionLabel
+            ? {
+                  label: "Completion",
+                  value: (
+                      <span
+                          style={{
+                              background: "#f0fdf4",
+                              color: "#166534",
+                              padding: "2px 10px",
+                              borderRadius: "5px",
+                              fontSize: "11.5px",
+                              fontWeight: 600,
+                          }}
+                      >
+                          ✅ {completionLabel}
+                      </span>
+                  ),
+              }
+            : null,
+        {
+            label: "Department",
+            value: task.department || task.dept || "—",
+        },
+        task.description ? { label: "Notes", value: task.description } : null,
+    ].filter(Boolean);
+
+    return (
+        <div
+            style={{
+                position: "absolute",
+                top: "14px",
+                right: "14px",
+                zIndex: 1100,
+                width: "310px",
+                maxWidth: "calc(100% - 28px)",
+                maxHeight: "calc(100% - 28px)",
+                overflowY: "auto",
+                background: "var(--surface, #ffffffee)",
+                backdropFilter: "blur(12px)",
+                borderRadius: "12px",
+                padding: "16px",
+                border: "1px solid var(--border, #e5e7eb)",
+                boxShadow: "0 8px 32px rgba(16, 24, 40, 0.18)",
+                fontSize: "12.5px",
+                lineHeight: "1.5",
+            }}
+        >
+            <button
+                type="button"
+                onClick={onClose}
+                style={{
+                    float: "right",
+                    border: "none",
+                    background: "var(--surface-2, #f1f5f9)",
+                    borderRadius: "6px",
+                    width: "26px",
+                    height: "26px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "14px",
+                    cursor: "pointer",
+                    color: "var(--muted, #6b7280)",
+                    transition: "all 0.15s ease",
+                }}
+            >
+                ✕
+            </button>
+
+            <h4
+                style={{
+                    margin: "0 0 12px",
+                    fontSize: "14px",
+                    fontWeight: 700,
+                    color: "var(--text, #111827)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                }}
+            >
+                {completed ? "✅" : "🔧"} Maintenance Task
+            </h4>
+
+            <div style={{ display: "grid", gap: "8px" }}>
+                {rows.map((row, i) => (
+                    <div
+                        key={i}
+                        style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "baseline",
+                            gap: "12px",
+                            paddingBottom:
+                                i < rows.length - 1 ? "6px" : "0",
+                            borderBottom:
+                                i < rows.length - 1
+                                    ? "1px solid var(--border-soft, #f3f4f6)"
+                                    : "none",
+                        }}
+                    >
+                        <span
+                            style={{
+                                color: "var(--muted, #6b7280)",
+                                fontSize: "12px",
+                                whiteSpace: "nowrap",
+                                fontWeight: 500,
+                            }}
+                        >
+                            {row.label}
+                        </span>
+                        <span
+                            style={{
+                                textAlign: "right",
+                                fontSize: "12.5px",
+                                color: "var(--text, #111827)",
+                                wordBreak: "break-word",
+                            }}
+                        >
+                            {row.value}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
